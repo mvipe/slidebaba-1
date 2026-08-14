@@ -1,0 +1,54 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() { return request.auth != null; }
+    function isAdmin() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    // A user owns everything under their own /users/{uid} tree (profile, backgrounds, etc.)
+    match /users/{uid}/{document=**} {
+      allow read, write: if isSignedIn() && request.auth.uid == uid;
+    }
+    // Admins may read any user document (support / lookups)
+    match /users/{uid} {
+      allow read: if isAdmin();
+    }
+
+    // Phone → uid index used during login
+    match /phoneIndex/{phone} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+
+    // Payments: a signed-in user can record their own payment; only admins can read them all
+    match /payments/{id} {
+      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+      allow read:   if isAdmin();
+      allow update, delete: if isAdmin();
+    }
+
+    // Coupons: public read (validation). Admins manage. Signed-in users may only bump the redemption count.
+    match /coupons/{code} {
+      allow read:   if true;
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin()
+        || (isSignedIn() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['redemptions']));
+    }
+
+    // Admin-uploaded shared backgrounds: any signed-in user can view, only admins can manage
+    match /globalBackgrounds/{id} {
+      allow read:  if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // Admin-managed fonts: any signed-in user can view, only admins can manage
+    match /globalFonts/{id} {
+      allow read:  if isSignedIn();
+      allow write: if isAdmin();
+    }
+  }
+}
