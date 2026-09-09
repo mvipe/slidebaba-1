@@ -1,10 +1,11 @@
 "use client";
 
-import { useRef, useState, useCallback } from "react";
+import { useRef, useState, useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import {
   Cpu, Scissors, Upload, Loader2, Trash2, CheckCircle2, Circle,
   ArrowRight, FileUp, Crosshair, Scan, RefreshCw, FileText, Presentation,
+  Laptop, Bot, AlertTriangle,
 } from "lucide-react";
 import { renderMixed } from "@/components/Katex";
 import RegionSelector from "@/components/studio/RegionSelector";
@@ -70,6 +71,63 @@ function looksThin(sections) {
 }
 
 
+/* --------------------------------------------------------------------------
+ * OCR engines
+ *
+ * "paddle"  PaddleOCR running on your own machine — free, unlimited, offline.
+ * "openai"  ChatGPT (GPT-4o vision) — paid per page, hosted, rate-limited.
+ *
+ * The server routes both through the SAME structurer, so the choice only changes
+ * who reads the pixels. Everything after that — question splitting, options,
+ * LaTeX, slide layout, export — is identical, which is what makes this a real
+ * A/B toggle rather than two different pipelines.
+ *
+ * Per-engine tuning below is not cosmetic: PaddleOCR (local) is happiest with one
+ * page at a time and a 1600px upload, while the OpenAI API is fine with a couple
+ * of pages in flight and wants a slightly larger image for `detail: "high"`.
+ * ------------------------------------------------------------------------ */
+const ENGINE_STORAGE_KEY = "slidebaba.ocrEngine";
+
+const ENGINE_META = {
+  openai: {
+    id: "openai",
+    label: "Model 1",
+    sub: "ChatGPT",
+    Icon: Bot,
+    // Two in flight is comfortably inside a normal rate limit and roughly halves the
+    // wall-clock time on a long PDF.
+    concurrency: 2,
+    tileConcurrency: 2,
+    // Each analyze chunk is a real model call here, so keep the fan-out modest.
+    analyzeConcurrency: 2,
+    sizes: [
+      { maxDim: 1800, quality: 0.85 },
+      { maxDim: 1500, quality: 0.78 },
+      { maxDim: 1200, quality: 0.7 },
+    ],
+  },
+  paddle: {
+    id: "paddle",
+    label: "Model 2",
+    sub: "PaddleOCR",
+    Icon: Laptop,
+    // One page at a time: the local server holds one model in memory and answers fastest
+    // when it is not fighting itself for CPU.
+    concurrency: 1,
+    tileConcurrency: 1,
+    analyzeConcurrency: 4,
+    sizes: [
+      { maxDim: 1600, quality: 0.82 },
+      { maxDim: 1400, quality: 0.75 },
+      { maxDim: 1150, quality: 0.68 },
+    ],
+  },
+};
+
+const ENGINE_ORDER = ["openai", "paddle"];
+const engineMeta = (id) => ENGINE_META[id] || ENGINE_META.paddle;
+
+
 export default function Studio() {
   const router = useRouter();
   const { user, profile, loading: authLoading, mergeProfile } = useAuth();
@@ -88,18 +146,94 @@ export default function Studio() {
   const [error, setError] = useState("");
   const [prog, setProg] = useState(null);
 
+  // Which OCR engine this scan uses. Remembered per browser so a user who prefers
+  // one does not have to re-pick it on every visit.
+  const [engine, setEngine] = useState("paddle");
+  const [engineInfo, setEngineInfo] = useState(null); // { default, engines:[{id,label,configured,free}] }
+  const [notesBusy, setNotesBusy] = useState(false);
+  // Remembers what has already been written for this document, so "Open" never fires a
+  // second concurrent write of a payload the pipeline just saved.
+  const savedRef = useRef(null);
+  const engineRef = useRef("paddle");
+  engineRef.current = engine;
+
+  // Restore the saved choice, then ask the server which engines are actually
+  // configured. A stored engine that the server cannot run is dropped rather than
+  // left to fail on the first page.
+  useEffect(() => {
+    let alive = true;
+    let saved = "";
+    try { saved = window.localStorage.getItem(ENGINE_STORAGE_KEY) || ""; } catch {}
+    if (saved && ENGINE_ORDER.includes(saved)) setEngine(saved);
+
+    (async () => {
+      try {
+        const res = await fetch("/api/ocr", { cache: "no-store" });
+        const data = await res.json();
+        if (!alive || !data?.engines) return;
+        setEngineInfo(data);
+        const ready = data.engines.filter((e) => e.configured).map((e) => e.id);
+        if (!ready.length) return;
+        const wanted = saved && ENGINE_ORDER.includes(saved) ? saved : data.default;
+        setEngine(ready.includes(wanted) ? wanted : ready[0]);
+      } catch { /* health check is advisory — the toggle still works without it */ }
+    })();
+
+    return () => { alive = false; };
+  }, []);
+
+  const pickEngine = (id) => {
+    setEngine(id);
+    try { window.localStorage.setItem(ENGINE_STORAGE_KEY, id); } catch {}
+  };
+
+  const engineReady = (id) => {
+    const found = engineInfo?.engines?.find((e) => e.id === id);
+    return found ? found.configured : true; // unknown yet — don't grey it out
+  };
+
+  // PaddleOCR is configured but nothing is listening — almost always "the local
+  // server isn't running". Worth saying BEFORE a scan burns 3 seconds failing,
+  // and worth saying in the words that name the actual fix.
+  const paddleOffline =
+    engineReady("paddle") && engineInfo?.paddle?.reachable?.checked === true &&
+    engineInfo.paddle.reachable.reachable === false;
+
+  // Re-check liveness — used after the user says they've started the server.
+  const recheckEngines = async () => {
+    try {
+      const res = await fetch("/api/ocr", { cache: "no-store" });
+      const data = await res.json();
+      if (data?.engines) setEngineInfo(data);
+    } catch {}
+  };
+
   const reset = () => {
     setFile(null); setPages([]); setStatus("idle"); setItems(null); setSlides(null); setDocId(null); setError("");
     regionsRef.current = [];
   };
 
+  // Upload size, per attempt. A PDF page is rasterised at scale 2.4 (~1700x2400) and the old
+  // code then RE-encoded it at 2048px / q0.95 — which INFLATES a q0.90 source into a 2-3 MB
+  // JPEG, ~3-4 MB once base64'd. That upload is what was stalling and timing out, not the OCR.
+  // 1600px is ~190 DPI for A4, which is comfortably above what PaddleOCR-VL uses internally,
+  // and it cuts the payload roughly 6x. Each retry shrinks further, so a marginal connection
+  // still gets a page through.
+  // Upload size, per attempt (per engine — see ENGINE_META). A PDF page is
+  // rasterised at scale 2.4 (~1700x2400) and re-encoding it at 2048px / q0.95
+  // INFLATES a q0.90 source into a 2-3 MB JPEG, ~3-4 MB once base64'd — that
+  // upload is what used to stall, not the OCR. Each retry shrinks further, so a
+  // marginal connection still gets a page through.
+
   // OCR a single page with retries (handles transient rate-limits / timeouts on big jobs).
-  const ocrImage = async (image, tries = 3) => {
-    const small = await downscaleDataUrl(image, 2048, 0.95);
+  const ocrImage = async (image, tries = 3, engineId = engineRef.current) => {
+    const sizes = engineMeta(engineId).sizes;
     let lastErr;
     for (let attempt = 0; attempt <= tries; attempt++) {
+      const size = sizes[Math.min(attempt, sizes.length - 1)];
+      const small = await downscaleDataUrl(image, size.maxDim, size.quality);
       try {
-        const res = await fetch("/api/ocr", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ image: small }) });
+        const res = await fetch("/api/ocr", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ image: small, engine: engineId }) });
         let data = {};
         try { data = await res.json(); } catch {}
         if (res.ok && data.ok) return { title: data.title, sections: data.sections || [] };
@@ -108,7 +242,9 @@ export default function Studio() {
         const cfg = res.status === 400 || res.status === 401 || /not configured|api key|invalid|quota|billing/i.test(data.error || data.detail || "");
         if (cfg) break;
       } catch (e) { lastErr = e; }
-      if (attempt < tries) await new Promise((r) => setTimeout(r, 1200 * (attempt + 1))); // backoff for 429 / timeouts
+      // Backoff between attempts. The server already backs off internally on a busy queue,
+      // so these waits are about giving the upstream real breathing room, not milliseconds.
+      if (attempt < tries) await new Promise((r) => setTimeout(r, 2500 * (attempt + 1)));
     }
     throw lastErr || new Error("OCR failed");
   };
@@ -155,11 +291,17 @@ export default function Studio() {
       const total = imgs.length;
       setProg({ done: 0, total });
 
-      const pageResults = await mapLimit(imgs.map((img, i) => ({ img, i })), 2, async ({ img, i }) => {
+      // OCR concurrency is 1 on purpose. PaddleOCR's hosted tier limits how many jobs can be
+      // queued at once and answers "submission queue is full" when several pages are submitted
+      // together — which the server can only partly absorb, since on Vercel parallel requests can
+      // land on different instances. One page at a time is slightly slower but reliable.
+      const eng = engineRef.current;
+      const meta = engineMeta(eng);
+      const pageResults = await mapLimit(imgs.map((img, i) => ({ img, i })), meta.concurrency, async ({ img, i }) => {
         let sections = [];
         let title = "";
         try {
-          const whole = await ocrImage(img);
+          const whole = await ocrImage(img, 3, eng);
           title = whole.title || "";
           sections = whole.sections || [];
         } catch (e) { if (!firstErr) firstErr = e; }
@@ -169,8 +311,8 @@ export default function Studio() {
         if (sections.length && looksThin(sections)) {
           try {
             const tiles = await tilePageImage(img, 2, 0.08);
-            const tileResults = await mapLimit(tiles, 2, async (t) => {
-              try { const r = await ocrImage(t); return r.sections || []; } catch { return []; }
+            const tileResults = await mapLimit(tiles, meta.tileConcurrency, async (t) => {   // same queue limit as above
+              try { const r = await ocrImage(t, 3, eng); return r.sections || []; } catch { return []; }
             });
             const tileSecs = tileResults.flat();
             const merged = dedupeSections(tileSecs);
@@ -203,9 +345,10 @@ export default function Studio() {
       for (let s = 0; s < sections.length; s += SEC_BATCH) chunks.push(sections.slice(s, s + SEC_BATCH));
 
       let analyzeErr = null;
-      const chunkResults = await mapLimit(chunks, 4, async (chunk) => {
+      // /api/analyze is local JavaScript now (no upstream service), so this stays parallel.
+      const chunkResults = await mapLimit(chunks, meta.analyzeConcurrency, async (chunk) => {
         try {
-          const res = await fetch("/api/analyze", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title, sections: chunk }) });
+          const res = await fetch("/api/analyze", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title, sections: chunk, engine: eng }) });
           let data = {};
           try { data = await res.json(); } catch {}
           if (res.ok && data.ok) return data.items || [];
@@ -232,7 +375,19 @@ export default function Studio() {
       // Count this successfully-processed document against the user's allowance (free tier = 2).
       if (user) { const cr = await consume(user.uid, profile, "doc"); if (cr.ok) mergeProfile(cr.patch); }
       if (failedArr.length) setError(`Note: ${failedArr.length} page(s) had a section that couldn't be read clearly (page ${failedArr.join(", ")}).`);
-      if (user && id) updateDocument(user.uid, id, { name: title, status: "generated", slides: sl, format: "slides" }).catch((e) => console.error("[SlideBaba] could not store generated slides:", e));
+      // AWAITED on purpose. This used to be fire-and-forget, which meant it was still
+      // writing chunks when "Open as Slides" fired a second write into the same document.
+      // Two interleaved chunk streams produced unparseable JSON and the document could
+      // never be opened again. Awaiting also means a real failure is shown, not logged.
+      if (user && id) {
+        try {
+          await updateDocument(user.uid, id, { name: title, status: "generated", slides: sl, format: "slides" });
+          savedRef.current = { docId: id, format: "slides" };
+        } catch (e) {
+          console.error("[SlideBaba] could not store generated slides:", e);
+          setError(`Your slides were created but could not be saved: ${e?.message || e}. They are still open here — download them before leaving this page.`);
+        }
+      }
     } catch (e) {
       setError(e.message || "Pipeline failed."); setStatus("idle");
     } finally {
@@ -275,9 +430,13 @@ export default function Studio() {
       setPages(imgs);
 
       let id = null;
-      const ref = await saveDocument(user.uid, { name: f.name, status: "processing", mode }).catch(() => null);
+      // A failed create used to leave id === null, which silently skipped every later save
+      // — the purest form of "my documents were never saved". Now it is reported.
+      const ref = await saveDocument(user.uid, { name: f.name, status: "processing", mode, engine })
+        .catch((e) => { console.error("[SlideBaba] could not create the document:", e); return null; });
       id = ref?.id || null;
       setDocId(id);
+      if (!id) setError("Heads up: this document could not be created in your account, so it won't appear in My Documents. Your scan will still run — download the result before leaving.");
 
       // Pipeline mode: auto-run the scan + split immediately. Snippet mode waits for boxes.
       if (mode === "pipeline") {
@@ -303,7 +462,7 @@ export default function Studio() {
           const src = pages[r.page];
           const { width, height } = await imageSize(src);
           const cropped = await cropImage(src, { x: r.fx * width, y: r.fy * height, w: r.fw * width, h: r.fh * height });
-          const ocr = await ocrImage(cropped);
+          const ocr = await ocrImage(cropped, 3, engineRef.current);
           const text = ocr.sections.map((s) => `${s.heading ? s.heading + " " : ""}${s.body}`).join("\n").trim();
           return { title: `Snippet ${i + 1}`, text: text || ocr.title || "" };
         })
@@ -331,18 +490,49 @@ export default function Studio() {
     }
   };
 
-  const openSlides = () => {
+  // Opening no longer re-saves. runPipelineOn already stored this exact deck, and a second
+  // concurrent chunk write into the same document is what corrupted documents beyond
+  // recovery. The editor's own autosave owns every change from here on.
+  const openSlides = async () => {
     if (!slides) return;
     const t = file?.name || "Untitled";
-    if (user && docId) updateDocument(user.uid, docId, { status: "generated", slides, format: "slides" }).catch((e) => console.error("[SlideBaba] could not store generated slides:", e));
+    try {
+      if (user && docId && savedRef.current?.docId !== docId) {
+        await updateDocument(user.uid, docId, { name: t, status: "generated", slides, format: "slides" });
+        savedRef.current = { docId, format: "slides" };
+      }
+    } catch (e) {
+      setError(`Couldn't save before opening: ${e?.message || e}`);
+      return;
+    }
     saveHandoff({ title: t, format: "slides", slides, docId });
     router.push("/editor");
   };
 
-  const openNotes = () => {
+  // Notes used to persist NOTHING here — touchDocument wrote only `format: "notes"`, and
+  // the items lived solely in the in-memory handoff. If the user closed the tab before the
+  // notes editor's 1.5s debounced autosave fired, the document existed in "My Documents"
+  // with zero content and reopened blank. This awaits a real write of the notes payload.
+  const openNotes = async () => {
     if (!items) return;
     const t = file?.name || "Untitled Notes";
-    if (user && docId) touchDocument(user.uid, docId, { status: "generated", format: "notes" });
+    setNotesBusy(true);
+    try {
+      if (user && docId) {
+        await updateDocument(user.uid, docId, {
+          name: t,
+          status: "generated",
+          format: "notes",
+          items,
+        });
+        savedRef.current = { docId, format: "notes" };
+      }
+    } catch (e) {
+      setNotesBusy(false);
+      setError(`Couldn't save your notes: ${e?.message || e}`);
+      return;
+    }
+    setNotesBusy(false);
     saveHandoff({ title: t, format: "notes", items, docId });
     router.push("/notes");
   };
@@ -361,7 +551,7 @@ export default function Studio() {
 
   const steps = [
     { t: "Upload Complete", d: file ? file.name : "Awaiting file…", done: !!file, active: status === "loading" },
-    { t: "OCR Scanning", d: "Reading text & formulas…", done: status === "preview", active: status === "scanning" },
+    { t: "OCR Scanning", d: `Reading text & formulas with ${engineMeta(engine).label}…`, done: status === "preview", active: status === "scanning" },
     { t: "Splitting by question", d: "One question per slide…", done: status === "preview", active: false },
   ];
 
@@ -377,6 +567,47 @@ export default function Studio() {
         </button>
       </div>
 
+      {/* OCR engine picker. Both models feed the same structurer server-side, so the
+          choice changes who reads the page and nothing else about the result. */}
+      {status !== "preview" && (
+      <div className="mx-auto w-fit">
+        <div className="flex items-center gap-1 rounded-2xl bg-ink-800/80 p-1.5 ring-1 ring-inset ring-white/10">
+          {ENGINE_ORDER.map((id) => {
+            const m = engineMeta(id);
+            const active = engine === id;
+            const ready = engineReady(id);
+            return (
+              <button
+                key={id}
+                type="button"
+                onClick={() => ready && !busy && pickEngine(id)}
+                disabled={busy || !ready}
+                aria-pressed={active}
+                title={ready ? m.sub : `${m.sub} is not set up on the server yet`}
+                className={`flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-bold transition disabled:cursor-not-allowed ${
+                  active
+                    ? "bg-gradient-to-r from-emerald-500 to-cyan-500 text-white shadow-soft"
+                    : "text-slate-400 hover:text-white"
+                } ${!ready ? "opacity-40" : ""}`}
+              >
+                <m.Icon className="h-4 w-4" /> {m.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {engine === "paddle" && paddleOffline && (
+          <div className="mt-2 flex flex-wrap items-center justify-center gap-2 rounded-xl bg-accent-600/15 px-3 py-2 text-[11.5px] leading-snug text-accent-300 ring-1 ring-inset ring-accent-500/30">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+            <span>Model 2 server isn&apos;t running — start <code className="rounded bg-black/25 px-1">start-paddleocr.bat</code>.</span>
+            <button type="button" onClick={recheckEngines} className="rounded-lg bg-white/10 px-2.5 py-1 font-bold text-white transition hover:bg-white/20">
+              Check again
+            </button>
+          </div>
+        )}
+      </div>
+      )}
+
       <input ref={inputRef} type="file" accept="image/*,.pdf" className="hidden" onChange={(e) => onPick(e.target.files?.[0])} />
       {error && <div className="rounded-xl bg-accent-600/15 px-4 py-3 text-sm text-accent-300 ring-1 ring-inset ring-accent-500/30">{error}</div>}
 
@@ -387,8 +618,8 @@ export default function Studio() {
             <h2 className="font-display text-lg font-bold text-white">{previewLabel} — {previewEntries.length} item{previewEntries.length !== 1 ? "s" : ""}</h2>
             <div className="flex flex-wrap gap-2">
               <button onClick={reset} className="btn-ghost">Start over</button>
-              <button onClick={openNotes} className="btn bg-ink-700 text-white hover:bg-ink-600"><FileText className="h-4 w-4" /> Open as A4 Notes</button>
-              <button onClick={openSlides} className="btn-primary"><Presentation className="h-4 w-4" /> Open as Slides <ArrowRight className="h-4 w-4" /></button>
+              <button onClick={openNotes} disabled={notesBusy} className="btn bg-ink-700 text-white hover:bg-ink-600 disabled:opacity-60"><FileText className="h-4 w-4" /> {notesBusy ? "Saving…" : "Open as A4 Notes"}</button>
+              <button onClick={openSlides} disabled={notesBusy} className="btn-primary disabled:opacity-60"><Presentation className="h-4 w-4" /> Open as Slides <ArrowRight className="h-4 w-4" /></button>
             </div>
           </div>
 

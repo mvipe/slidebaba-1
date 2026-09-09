@@ -7,14 +7,21 @@ import {
   ArrowLeft, Bold, Italic, Underline, Strikethrough, List, ListOrdered,
   AlignLeft, AlignCenter, AlignRight, AlignJustify, Type, Highlighter, Undo2, Redo2,
   Download, Loader2, Cloud, CloudOff, ChevronDown, Minus, Link2, Indent, Outdent, Eraser,
-  Columns2, FileText, Sigma, Table as TableIcon, Image as ImageIcon, Printer, X,
+  Columns2, FileText, Sigma, Table as TableIcon, Image as ImageIcon, Printer, X, Palette,
 } from "lucide-react";
 import { renderMixedAnnotated } from "@/components/Katex";
 import { readHandoff, clearHandoff } from "@/lib/slideStore";
 import { latexToUnicode } from "@/lib/mathText";
 import { consume, remaining } from "@/lib/plan";
 import { useAuth } from "@/context/AuthContext";
-import { saveDownload } from "@/lib/docs";
+import { saveDownload, listBackgrounds, saveBackground } from "@/lib/docs";
+import { listGlobalBackgrounds } from "@/lib/admin";
+import { fileToDataUrl, downscaleDataUrl } from "@/lib/imageCrop";
+import { readBrand, writeBrand, prepareLogo } from "@/lib/brand";
+import {
+  DEFAULT_DESIGN, normalizeDesign, pageStyle, bodyStyle, pageCss,
+  PAGE_THEMES, PAGE_SIZES, MARGINS,
+} from "@/lib/notesDesign";
 import { useAutoSave } from "@/lib/useAutoSave";
 import { readLocalDraft, clearLocalDraft, localKey } from "@/lib/docStore";
 import ThemeToggleButton from "@/components/ThemeToggleButton";
@@ -57,6 +64,7 @@ export default function NotesEditor() {
   const hContactRef = useRef(null);
   const hTeacherRef = useRef(null);
   const didInit = useRef(false);
+  const itemsRef = useRef(null);
   const imgInput = useRef(null);
   const logoInput = useRef(null);
 
@@ -70,6 +78,15 @@ export default function NotesEditor() {
   const [hdColor, setHdColor] = useState("#ffffff");
   const [logo, setLogo] = useState(""); // "" = SlideBaba, "none" = removed, dataURL = custom
 
+  // Page design — the notes-side equivalent of the slide editor's themes + background rail.
+  const [design, setDesign] = useState(DEFAULT_DESIGN);
+  const [designOpen, setDesignOpen] = useState(false);
+  const [bgLib, setBgLib] = useState([]);      // the user's own saved backgrounds
+  const [sharedBg, setSharedBg] = useState([]); // admin-provided ones
+  const [brandBusy, setBrandBusy] = useState("");
+  const bgInput = useRef(null);
+  const setD = (patch) => setDesign((d) => ({ ...d, ...patch }));
+
   // LaTeX formula editor
   const [mathEdit, setMathEdit] = useState(null); // { node, display }
   const [mathDraft, setMathDraft] = useState("");
@@ -81,6 +98,9 @@ export default function NotesEditor() {
     if (h?.title) setTitle(h.title);
     if (h?.docId) setDocId(h.docId);
     if (h?.cols === 2) setCols(2);
+    // Keep the OCR items with the document. They are the only thing that can rebuild the
+    // notes if the HTML is ever lost, and re-saving without them would quietly drop them.
+    if (h?.items?.length) itemsRef.current = h.items;
     if (bodyRef.current) {
       bodyRef.current.innerHTML = h?.notesHtml || (h?.items?.length ? buildBodyHtml(h.items) : "<p>Start typing your notes…</p>");
       bodyRef.current.querySelectorAll(".mathpill, .katex").forEach((n) => n.setAttribute("contenteditable", "false"));
@@ -93,6 +113,7 @@ export default function NotesEditor() {
     if (hd.bg) setHdBg(hd.bg);
     if (hd.color) setHdColor(hd.color);
     if (hd.logo) setLogo(hd.logo);
+    if (hd.design) setDesign(normalizeDesign(hd.design));
     clearHandoff();
 
     // Anything that never made it to the server last time is still on this device.
@@ -119,24 +140,74 @@ export default function NotesEditor() {
      Firestore document could not hold it, which is why saves used to fail while the header
      still said "Saved". */
   const buildSnapshot = useCallback(() => ({
-    meta: {
-      name: title, format: "notes", status: "generated", cols,
+    meta: { name: title, format: "notes", status: "generated", cols },
+    // `header` now travels in the PAYLOAD, not the metadata: a custom logo is a base64 data
+    // URL, and on the parent document it blew past Firestore's 1 MiB cap and made every
+    // save of this document fail permanently. lib/docs.js routes it for us — it just has to
+    // be here rather than in `meta`.
+    payload: {
+      notesHtml: bodyRef.current?.innerHTML || "",
+      ...(itemsRef.current?.length ? { items: itemsRef.current } : {}),
       header: {
         title: hTitleRef.current?.innerText || "",
         pdf: hPdfRef.current?.innerText || "",
         contact: hContactRef.current?.innerText || "",
         teacher: hTeacherRef.current?.innerText || "",
         bg: hdBg, color: hdColor, logo,
+        design,
       },
     },
-    payload: { notesHtml: bodyRef.current?.innerHTML || "" },
-  }), [title, cols, hdBg, hdColor, logo]);
+  }), [title, cols, hdBg, hdColor, logo, design]);
 
   const saver = useAutoSave({ user, docId, setDocId, build: buildSnapshot, format: "notes" });
   const scheduleSave = saver.markDirty;   // every existing call site keeps working
 
   useEffect(() => { scheduleSave(); // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [title, cols, hdBg, hdColor, logo]);
+  }, [title, cols, hdBg, hdColor, logo, design]);
+
+  // Backgrounds are shared with the slide editor: one library, both surfaces.
+  useEffect(() => {
+    if (!user) return;
+    listBackgrounds(user.uid).then(setBgLib).catch(() => {});
+    listGlobalBackgrounds().then(setSharedBg).catch(() => {});
+  }, [user]);
+
+  const pickPageBgImage = async (file) => {
+    if (!file) return;
+    const data = await downscaleDataUrl(await fileToDataUrl(file), 1400, 0.82);
+    setD({ pageBgImage: data });
+    scheduleSave();
+    if (user) {
+      const ref = await saveBackground(user.uid, data);
+      if (ref?.id) setBgLib((b) => [{ id: ref.id, url: data }, ...b]);
+    }
+  };
+
+  /* ---- brand, shared with the slide editor via users/{uid}.brand ---- */
+
+  const useSavedBrand = () => {
+    const b = readBrand(profile);
+    if (!b.logo && !b.name) return;
+    if (b.logo) setLogo(b.logo);
+    if (b.name && hTitleRef.current) hTitleRef.current.innerText = b.name;
+    scheduleSave();
+  };
+
+  const saveAsBrand = async () => {
+    setBrandBusy("saving");
+    try {
+      await writeBrand(user?.uid, {
+        logo: logo && logo !== "none" ? logo : "",
+        name: hTitleRef.current?.innerText || "",
+        wh: readBrand(profile).wh,
+      }, mergeProfile);
+      setBrandBusy("saved");
+      setTimeout(() => setBrandBusy(""), 1800);
+    } catch {
+      setBrandBusy("failed");
+      setTimeout(() => setBrandBusy(""), 2500);
+    }
+  };
 
   const cmd = (command, value = null) => { bodyRef.current?.focus(); try { document.execCommand(command, false, value); } catch {} setAlignOpen(false); scheduleSave(); };
   const highlight = (color) => {
@@ -155,7 +226,13 @@ export default function NotesEditor() {
     cmd("insertHTML", html);
   };
   const onImage = async (file) => { if (!file) return; try { const data = await readFile(file); cmd("insertHTML", `<img src="${data}" style="max-width:100%;height:auto;" />`); } catch {} };
-  const onLogo = async (file) => { if (!file) return; try { setLogo(await readFile(file)); } catch {} };
+  const onLogo = async (file) => {
+    if (!file) return;
+    try {
+      const prepared = await prepareLogo(file);
+      if (prepared?.logo) { setLogo(prepared.logo); scheduleSave(); }
+    } catch { /* an unreadable image is not worth an error dialog */ }
+  };
 
   /* -------- formula editor -------- */
   const openMathEditor = (node) => {
@@ -245,7 +322,6 @@ export default function NotesEditor() {
   return (
     <div className="app-shell flex h-screen [height:100dvh] flex-col bg-slate-100 dark:bg-ink-950">
       <style>{`
-        .notes-page{ width:794px; min-height:1123px; }
         .notes-hd-field:empty:before{ content:attr(data-ph); opacity:.7; }
         .notes-body{ outline:none; }
         .notes-body.cols2{ column-count:2; column-gap:34px; }
@@ -266,9 +342,11 @@ export default function NotesEditor() {
           #notes-print{ position:absolute; left:0; top:0; width:100%; }
           .notes-page{ width:100% !important; min-height:auto !important; box-shadow:none !important; }
           .mathpill{ background:transparent !important; border:0 !important; padding:0 !important; }
-          @page{ size:A4; margin:10mm; }
         }
       `}</style>
+      {/* Page size, margins and theme colours are generated so that the on-screen sheet and
+          the printed @page can never describe different paper. See lib/notesDesign.js. */}
+      <style>{pageCss(design)}</style>
 
       <header className="flex min-h-[3.5rem] shrink-0 flex-wrap items-center justify-between gap-y-2 border-b border-white/10 bg-ink-900/90 px-2 py-2 no-print sm:h-14 sm:flex-nowrap sm:py-0 sm:px-4">
         <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
@@ -351,11 +429,15 @@ export default function NotesEditor() {
         <TBtn onClick={() => imgInput.current?.click()} title="Insert image"><ImageIcon className="h-4 w-4" /></TBtn>
         <TBtn onClick={() => cmd("insertHorizontalRule")} title="Divider"><Minus className="h-4 w-4" /></TBtn>
         <Sep />
-        <ColorBtn title="Header background" icon={<span className="text-[9px] font-bold leading-none text-white">HBG</span>} defaultValue="#3a1f7a" onChange={setHdBg} />
-        <ColorBtn title="Header text colour" icon={<span className="text-[9px] font-bold leading-none text-white">HTX</span>} defaultValue="#ffffff" onChange={setHdColor} />
         <input ref={logoInput} type="file" accept="image/*" className="hidden" onChange={(e) => onLogo(e.target.files?.[0])} />
-        <TBtn onClick={() => logoInput.current?.click()} title="Upload your brand logo"><ImageIcon className="h-4 w-4 text-brand-300" /></TBtn>
-        <TBtn onClick={() => setLogo((l) => (l === "none" ? "" : "none"))} title="Show / remove logo"><X className="h-4 w-4" /></TBtn>
+        <input ref={bgInput} type="file" accept="image/*" className="hidden" onChange={(e) => pickPageBgImage(e.target.files?.[0])} />
+        <button
+          onClick={() => setDesignOpen((v) => !v)}
+          title="Page design and branding"
+          className={`flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-sm ring-1 ring-inset transition ${designOpen ? "bg-brand-500/25 text-white ring-brand-500/40" : "text-slate-300 ring-white/10 hover:bg-ink-700 hover:text-white"}`}
+        >
+          <Palette className="h-4 w-4" /> Design
+        </button>
         <Sep />
         <button onClick={() => setCols((c) => (c === 2 ? 1 : 2))} title="Split into two columns"
           className={`flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-sm ring-1 ring-inset transition ${cols === 2 ? "bg-brand-500/25 text-white ring-brand-500/40" : "text-slate-300 ring-white/10 hover:bg-ink-700 hover:text-white"}`}>
@@ -367,10 +449,142 @@ export default function NotesEditor() {
         </div>
       </div>
 
+      {/* Design panel — page customization + branding, the notes-side counterpart of the
+          slide editor's Themes / BG / Brand rails. */}
+      {designOpen && (
+        <>
+          <div className="fixed inset-0 z-30 bg-black/40 no-print" onClick={() => setDesignOpen(false)} />
+          <aside className="no-print fixed right-0 top-0 z-40 flex h-full w-[320px] max-w-[88vw] flex-col overflow-y-auto border-l border-white/10 bg-ink-900 p-4 shadow-glow">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="font-display text-base font-bold text-white">Page design</h3>
+              <button onClick={() => setDesignOpen(false)} className="grid h-8 w-8 place-items-center rounded-md text-slate-400 hover:bg-ink-700 hover:text-white"><X className="h-4 w-4" /></button>
+            </div>
+
+            <Group label="Theme">
+              <div className="grid grid-cols-5 gap-1.5">
+                {Object.values(PAGE_THEMES).map((t) => (
+                  <button key={t.id} onClick={() => { setD({ theme: t.id, pageBg: "", pageBgImage: "" }); scheduleSave(); }}
+                    title={t.label}
+                    className={`h-10 rounded-lg ring-1 transition ${design.theme === t.id && !design.pageBg && !design.pageBgImage ? "ring-2 ring-brand-400" : "ring-white/15 hover:ring-brand-400/60"}`}
+                    style={{ background: t.bg }}>
+                    <span className="block h-1.5 w-1/2 rounded-full" style={{ background: t.head, margin: "0 auto" }} />
+                  </button>
+                ))}
+              </div>
+            </Group>
+
+            <Group label="Page size">
+              <div className="flex gap-1.5">
+                {Object.values(PAGE_SIZES).map((z) => (
+                  <button key={z.id} onClick={() => { setD({ pageSize: z.id }); scheduleSave(); }}
+                    className={`flex-1 rounded-lg px-2 py-2 text-xs font-bold ring-1 ring-inset transition ${design.pageSize === z.id ? "bg-brand-gradient text-white ring-transparent" : "bg-ink-800 text-slate-300 ring-white/10 hover:text-white"}`}>
+                    {z.label}
+                  </button>
+                ))}
+              </div>
+            </Group>
+
+            <Group label="Margins">
+              <div className="flex gap-1.5">
+                {Object.values(MARGINS).map((m) => (
+                  <button key={m.id} onClick={() => { setD({ margin: m.id }); scheduleSave(); }}
+                    className={`flex-1 rounded-lg px-2 py-2 text-xs font-bold ring-1 ring-inset transition ${design.margin === m.id ? "bg-brand-gradient text-white ring-transparent" : "bg-ink-800 text-slate-300 ring-white/10 hover:text-white"}`}>
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+            </Group>
+
+            <Group label="Body text size">
+              <div className="flex items-center gap-3">
+                <input type="range" min="11" max="22" value={design.bodySize}
+                  onChange={(e) => setD({ bodySize: Number(e.target.value) })}
+                  onMouseUp={scheduleSave} onTouchEnd={scheduleSave}
+                  className="h-1 flex-1 cursor-pointer accent-brand-500" />
+                <span className="w-10 text-right text-xs font-bold text-slate-300">{design.bodySize}px</span>
+              </div>
+            </Group>
+
+            <Group label="Page background">
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="flex items-center gap-2 text-xs text-slate-300">
+                  <input type="color" value={design.pageBg || "#ffffff"}
+                    onChange={(e) => { setD({ pageBg: e.target.value, pageBgImage: "" }); scheduleSave(); }}
+                    className="h-8 w-10 cursor-pointer rounded bg-transparent" />
+                  Colour
+                </label>
+                <button onClick={() => bgInput.current?.click()} className="btn-ghost px-2 py-1.5 text-xs"><ImageIcon className="h-3.5 w-3.5" /> Image</button>
+                {(design.pageBg || design.pageBgImage) && (
+                  <button onClick={() => { setD({ pageBg: "", pageBgImage: "" }); scheduleSave(); }} className="text-xs text-slate-400 hover:text-white">reset</button>
+                )}
+              </div>
+              {(bgLib.length > 0 || sharedBg.length > 0) && (
+                <div className="mt-2 grid grid-cols-4 gap-1.5">
+                  {[...bgLib, ...sharedBg].slice(0, 12).map((b) => (
+                    <button key={b.id} onClick={() => { setD({ pageBgImage: b.url, pageBg: "" }); scheduleSave(); }}
+                      className="h-10 rounded-md bg-cover bg-center ring-1 ring-white/15 hover:ring-brand-400"
+                      style={{ backgroundImage: `url("${b.url}")` }} />
+                  ))}
+                </div>
+              )}
+            </Group>
+
+            <Group label="Header band">
+              <div className="flex flex-wrap items-center gap-3">
+                <label className="flex items-center gap-2 text-xs text-slate-300">
+                  <input type="color" value={hdBg || "#3a1f7a"} onChange={(e) => { setHdBg(e.target.value); scheduleSave(); }} className="h-8 w-10 cursor-pointer rounded bg-transparent" />
+                  Background
+                </label>
+                <label className="flex items-center gap-2 text-xs text-slate-300">
+                  <input type="color" value={hdColor || "#ffffff"} onChange={(e) => { setHdColor(e.target.value); scheduleSave(); }} className="h-8 w-10 cursor-pointer rounded bg-transparent" />
+                  Text
+                </label>
+              </div>
+            </Group>
+
+            <Group label="Branding">
+              <div className="flex flex-wrap gap-2">
+                <button onClick={() => logoInput.current?.click()} className="btn-ghost px-2 py-1.5 text-xs"><ImageIcon className="h-3.5 w-3.5" /> Upload logo</button>
+                <button onClick={() => { setLogo((l) => (l === "none" ? "" : "none")); scheduleSave(); }} className="btn-ghost px-2 py-1.5 text-xs">
+                  {logo === "none" ? "Show logo" : "Hide logo"}
+                </button>
+              </div>
+              {/* One brand, both editors — users/{uid}.brand. Setting it up for slides used
+                  to have no effect here at all. */}
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button onClick={useSavedBrand} disabled={!readBrand(profile).logo && !readBrand(profile).name}
+                  className="btn-ghost px-2 py-1.5 text-xs disabled:opacity-40">
+                  Use my saved brand
+                </button>
+                <button onClick={saveAsBrand} className="btn-ghost px-2 py-1.5 text-xs">
+                  {brandBusy === "saving" ? "Saving…" : brandBusy === "saved" ? "Saved ✓" : brandBusy === "failed" ? "Failed" : "Save as my brand"}
+                </button>
+              </div>
+              <p className="mt-1.5 text-[11px] leading-snug text-slate-500">Your saved brand is shared with the slide editor.</p>
+            </Group>
+
+            <Group label="Footer">
+              <label className="flex items-center gap-2 text-xs text-slate-300">
+                <input type="checkbox" checked={!!design.footer} onChange={(e) => { setD({ footer: e.target.checked }); scheduleSave(); }} className="accent-brand-500" />
+                Show a footer line
+              </label>
+              {design.footer && (
+                <input value={design.footerText} onChange={(e) => setD({ footerText: e.target.value })} onBlur={scheduleSave}
+                  placeholder="Footer text (defaults to your coaching name)"
+                  className="mt-2 w-full rounded-md bg-ink-800 px-2 py-1.5 text-xs text-white ring-1 ring-inset ring-white/10 outline-none placeholder:text-slate-500" />
+              )}
+              <p className="mt-1.5 text-[11px] leading-snug text-slate-500">
+                The footer prints once at the end of the notes. Per-page footers aren&apos;t possible with browser printing.
+              </p>
+            </Group>
+          </aside>
+        </>
+      )}
+
       {/* A4 canvas */}
       <div className="flex-1 overflow-auto bg-slate-200/70 p-6 dark:bg-ink-950">
         <div id="notes-print" className="mx-auto w-fit">
-          <div className="notes-page mx-auto bg-white shadow-card">
+          <div className="notes-page mx-auto shadow-card" style={pageStyle(design)}>
             <div className="flex items-center justify-between gap-4 bg-gradient-to-r from-[#1d1248] to-[#3a1f7a] px-6 py-4 text-white" style={{ background: hdBg || undefined, color: hdColor || undefined }}>
               {logo === "none" ? (
                 <div className="h-12 w-12 shrink-0" />
@@ -390,7 +604,12 @@ export default function NotesEditor() {
               <div className="h-12 w-12" />
             </div>
             <div ref={bodyRef} contentEditable suppressContentEditableWarning onInput={scheduleSave} onClick={onBodyClick}
-              className={`notes-body px-10 py-8 text-[15px] ${cols === 2 ? "cols2" : ""}`} />
+              className={`notes-body ${cols === 2 ? "cols2" : ""}`} style={bodyStyle(design)} />
+            {design.footer && (
+              <div className="px-10 pb-6 pt-2 text-center text-[11px] opacity-70">
+                {design.footerText || hTitleRef.current?.innerText || ""}
+              </div>
+            )}
           </div>
         </div>
         <p className="no-print mx-auto mt-4 max-w-[794px] text-center text-xs text-slate-500">
@@ -468,5 +687,15 @@ function NotesSaveBadge({ status, error, onRetry }) {
     <span className="hidden items-center gap-1.5 text-xs text-slate-400 sm:flex" title={label}>
       {status === "saving" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Cloud className="h-3.5 w-3.5" />} {label}
     </span>
+  );
+}
+
+/** One labelled block in the design panel. */
+function Group({ label, children }) {
+  return (
+    <div className="mb-4">
+      <p className="mb-1.5 text-[11px] font-bold uppercase tracking-widest text-slate-500">{label}</p>
+      {children}
+    </div>
   );
 }

@@ -1,0 +1,33 @@
+SlideBaba - dual OCR engine: lines to add to .env.local
+=======================================================
+
+Your existing .env.local could not be edited from here (the bridge blocks writes
+to env files, which is the right default). Open it yourself and paste the block
+below at the end. Your OPENAI_API_KEY and PADDLE_AISTUDIO_TOKEN are already there
+and stay as they are - none of these lines replace them.
+
+Then restart:  npm run dev
+
+# ============================================================================
+#  OCR ENGINES  — added by the dual-engine upgrade.
+#  The Studio toggle picks per scan; this is only the fallback default.
+#  paddle = PaddleOCR, free, runs on your own machine (paddleocr-server/)
+#  openai = ChatGPT (GPT-4o vision), paid, hosted
+# ============================================================================
+OCR_ENGINE_DEFAULT=paddle
+NEXT_PUBLIC_OCR_ENGINE_DEFAULT=paddle
+
+# ---- PaddleOCR (free, local) — start paddleocr-server/start-paddleocr.bat ----
+PADDLE_OCR_BASE_URL=http://127.0.0.1:8080
+PADDLE_OCR_MODE=self
+PADDLE_OCR_TIMEOUT_MS=180000
+PADDLE_OCR_MAX_WAIT_MS=240000
+PADDLE_OCR_CONCURRENCY=1
+
+# ---- ChatGPT (paid, hosted) — OPENAI_API_KEY already set above ----
+OPENAI_VISION_MODEL=gpt-4o
+OPENAI_SPLIT_MODEL=gpt-4o-mini
+OPENAI_VISION_DETAIL=high
+OPENAI_TIMEOUT_MS=90000
+OPENAI_MAX_WAIT_MS=150000
+OPENAI_CONCURRENCY=2

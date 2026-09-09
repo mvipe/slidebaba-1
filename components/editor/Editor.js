@@ -6,18 +6,15 @@ import {
   ArrowLeft, Layers, Type as TypeIcon, Shapes, ImagePlus, Palette, Wallpaper,
   Eye, Download, Plus, Copy, Trash2, ChevronLeft, ChevronRight, Cloud, CloudOff, X,
   Square, Circle, Minus, Upload, Loader2, FileText, Presentation, ChevronDown, Crown, Check,
+  Table as TableIcon,
 } from "lucide-react";
 import Toolbar from "@/components/editor/Toolbar";
 import { renderMixed } from "@/components/Katex";
-import {
-  THEMES, DEFAULT_THEME, uid, readHandoff, clearHandoff,
-  newText, newRect, newEllipse, newLine, newImage,
-} from "@/lib/slideStore";
+import { THEMES, DEFAULT_THEME, uid, readHandoff, clearHandoff, newText, newRect, newEllipse, newLine, newImage, newTable } from "@/lib/slideStore";
 import { useAuth } from "@/context/AuthContext";
 import { saveDownload, listBackgrounds, saveBackground, removeBackground } from "@/lib/docs";
 import {
-  DESIGN_W, DESIGN_H, fitScale, slideBgStyle, frameStyle, textStyle,
-  shapeInnerStyle, lineBarStyle, imageStyle, isTextElement,
+  DESIGN_W, DESIGN_H, fitScale, slideBgStyle, frameStyle, textStyle, shapeInnerStyle, lineBarStyle, imageStyle, isTextElement, tableHTML, tableStyle, tableCellStyle, tableRows, tableColWidths,
 } from "@/lib/slideRender";
 import { useAutoSave } from "@/lib/useAutoSave";
 import { readLocalDraft, clearLocalDraft, localKey } from "@/lib/docStore";
@@ -31,6 +28,7 @@ const RAIL = [
   { id: "slides", label: "Slides", icon: Layers },
   { id: "text", label: "Text", icon: TypeIcon },
   { id: "shapes", label: "Shapes", icon: Shapes },
+  { id: "table",  label: "Table",  icon: TableIcon },
   { id: "images", label: "Image", icon: ImagePlus },
   { id: "design", label: "Themes", icon: Palette },
   { id: "bg", label: "BG", icon: Wallpaper },
@@ -114,13 +112,30 @@ export default function Editor() {
   // still unsaved on this device the last time the editor was open.
   useEffect(() => {
     const h = readHandoff();
+
+    // Claim the document id ALWAYS, and clear the handoff ALWAYS — even when the handoff
+    // carries no slides.
+    //
+    // This used to happen only inside `if (h?.slides?.length)`. Opening a document that had
+    // no slides version therefore left docId === null, so the first keystroke made autosave
+    // take its "create" branch and mint a SECOND document, orphaning the original — which is
+    // how work appeared to vanish from My Documents. The stale handoff also leaked into the
+    // next navigation, so the wrong document could open afterwards.
+    const handoffDocId = h?.docId || null;
+    if (h) clearHandoff();
+    if (handoffDocId) setDocId(handoffDocId);
+
     let loaded = null;
     if (h?.slides?.length) {
-      loaded = { slides: h.slides, title: h.title || "Untitled", docId: h.docId || null };
-      clearHandoff();
+      loaded = { slides: h.slides, title: h.title || "Untitled", docId: handoffDocId };
+    } else if (h?.docId) {
+      // An empty deck for a real document: keep the title and the id, but do NOT prime the
+      // autosave baseline — priming an empty payload would let a stray keystroke overwrite
+      // a good saved version with nothing.
+      if (h.title) setTitle(h.title);
     }
 
-    const key = localKey(user?.uid, loaded?.docId ?? null, "slides");
+    const key = localKey(user?.uid, handoffDocId, "slides");
     const draft = readLocalDraft(key);
     const cloudAt = h?.updatedAtMs || 0;
     if (draft?.payload?.slides?.length && draft.at > cloudAt) {
@@ -132,7 +147,6 @@ export default function Editor() {
       if (useDraft) {
         setSlides(draft.payload.slides);
         setTitle(draft.meta?.name || loaded?.title || "Untitled");
-        if (loaded?.docId) setDocId(loaded.docId);
         hasEditedRef.current = true;
         setTimeout(() => markDirty(), 0);
         return;
@@ -143,7 +157,6 @@ export default function Editor() {
     if (loaded) {
       setSlides(loaded.slides);
       setTitle(loaded.title);
-      if (loaded.docId) setDocId(loaded.docId);
       saver.primeFrom({ slides: loaded.slides }, { name: loaded.title, format: "slides", status: "generated" }, h?.chunks ?? null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -222,6 +235,48 @@ export default function Editor() {
     if (selected.master && selected.mid) commit((s) => s.map((sl) => ({ ...sl, elements: sl.elements.filter((e) => e.mid !== selected.mid) })));
     else mapCurrent((sl) => ({ ...sl, elements: sl.elements.filter((e) => e.id !== selected.id) }));
     setSelectedId(null);
+  };
+
+  /* ---------------- table operations ---------------- */
+  // Every one of these goes through patchEl, so undo/redo, autosave and master-element
+  // syncing all keep working with no special cases.
+
+  const setCell = (el, r, c, value) => {
+    const rows = tableRows(el).map((row) => [...row]);
+    if (!rows[r]) return;
+    const next = String(value ?? "").replace(/\u00a0/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+    if (rows[r][c] === next) return;
+    rows[r][c] = next;
+    patchEl(el.id, { rows });
+  };
+
+  const tableOp = (op) => {
+    const el = selected;
+    if (!el || el.type !== "table") return;
+    const rows = tableRows(el).map((row) => [...row]);
+    const widths = tableColWidths(el);
+    const cols = rows[0].length;
+
+    if (op === "addRow") rows.push(Array(cols).fill(""));
+    if (op === "delRow" && rows.length > 1) rows.pop();
+    if (op === "addCol") {
+      rows.forEach((row) => row.push(""));
+      patchEl(el.id, { rows, colW: Array(cols + 1).fill(100 / (cols + 1)) });
+      return;
+    }
+    if (op === "delCol" && cols > 1) {
+      rows.forEach((row) => row.pop());
+      patchEl(el.id, { rows, colW: Array(cols - 1).fill(100 / (cols - 1)) });
+      return;
+    }
+    void widths;
+    patchEl(el.id, { rows });
+  };
+
+  const addTable = () => {
+    addEl(newTable());
+    setRail("slides");
+    setMobileSheet(false);
   };
 
   const addEl = (el) => {
@@ -543,6 +598,13 @@ export default function Editor() {
               <p className="px-1 pt-2 text-xs text-slate-500">Wrap math in $…$, e.g. <code className="text-brand-300">{"$\\frac{a}{b}$"}</code></p>
             </div>
           )}
+          {rail === "table" && (
+            <div className="space-y-2">
+              <p className="px-1 text-xs font-bold uppercase tracking-widest text-slate-500">Table</p>
+              <button onClick={addTable} className="btn-ghost w-full justify-start"><Plus className="h-4 w-4" /> Insert table</button>
+              <p className="px-1 pt-2 text-xs text-slate-500">Double-click a table to edit its cells. Rows and columns are in the toolbar when a table is selected.</p>
+            </div>
+          )}
           {rail === "shapes" && (
             <div className="space-y-2">
               <p className="px-1 text-xs font-bold uppercase tracking-widest text-slate-500">Shapes</p>
@@ -639,6 +701,7 @@ export default function Editor() {
             <div className="flex items-center gap-1.5 border-b border-brand-500/20 bg-brand-500/10 px-3 py-1 text-[11px] font-semibold text-brand-200"><Crown className="h-3 w-3" /> This element is on every slide — your changes apply everywhere.</div>
           )}
           <Toolbar el={selected} onChange={applyStyle} onDelete={deleteSelected} onUndo={undo} onRedo={redo} canUndo={past.length > 0} canRedo={future.length > 0} onArrange={arrange} onAlign={alignEl} scope={styleScope} setScope={setStyleScope} selActive={hasSel && editingId === selectedId} />
+                onTableOp={tableOp}
           <div ref={stageWrapRef} className="flex flex-1 overflow-auto bg-dots p-4 sm:p-8" onMouseDown={() => setSelectedId(null)}>
             {/* Outer box reserves the on-screen footprint; the inner surface is always
                 exactly DESIGN_W x DESIGN_H and is scaled, never resized. */}
@@ -657,11 +720,12 @@ export default function Editor() {
                   <ElementView key={el.id} el={el} theme={theme} selected={el.id === selectedId} editing={el.id === editingId} scale={stageScale}
                     onMouseDown={(e) => onElMouseDown(e, el)}
                     onResizeStart={onResizeStart}
-                    onDoubleClick={() => { if (isTextElement(el)) { setSelectedId(el.id); setEditingId(el.id); } }}
+                    onDoubleClick={() => { if (isTextElement(el) || el.type === "table") { setSelectedId(el.id); setEditingId(el.id); } }}
                     onBlur={(val) => { setEditingId(null); setHasSel(false); if (val !== el.content) patchEl(el.id, { content: val }); }}
                     onRegisterSel={(api) => { selApiRef.current = api; }}
                     onSelState={setHasSel}
                     onContent={(val) => { if (val !== el.content) patchEl(el.id, { content: val }); }}
+                    onCell={(r, c, val) => setCell(el, r, c, val)}
                   />
                 ))}
               </div>
@@ -800,7 +864,7 @@ function patchToSpanCss(patch) {
 }
 
 
-function ElementView({ el, theme, selected, editing, scale = 1, onMouseDown, onDoubleClick, onBlur, onResizeStart, onRegisterSel, onSelState, onContent }) {
+function ElementView({ el, theme, selected, editing, scale = 1, onMouseDown, onDoubleClick, onBlur, onResizeStart, onRegisterSel, onSelState, onContent, onCell }) {
   const taRef = useRef(null);
   const isText = isTextElement(el);
   const rendered = useMemo(() => (isText ? renderMixed(el.content) : ""), [el.content, isText]);
@@ -949,6 +1013,44 @@ function ElementView({ el, theme, selected, editing, scale = 1, onMouseDown, onD
     ) : (
       <div className="kx" style={tStyle} dangerouslySetInnerHTML={{ __html: rendered }} />
     );
+  } else if (el.type === "table") {
+    // Editing shows one contentEditable per cell (each commits on blur); otherwise the
+    // table is rendered from lib/slideRender.js — the exact same markup builder the PDF
+    // exporter uses, so the two cannot drift.
+    inner = editing ? (
+      <table style={{ ...tableStyle(el), outline: "none" }} onMouseDown={(e) => e.stopPropagation()}>
+        <colgroup>{tableColWidths(el).map((w, i) => <col key={i} style={{ width: `${w}%` }} />)}</colgroup>
+        <tbody>
+          {tableRows(el).map((row, r) => (
+            <tr key={r}>
+              {row.map((cell, c) => {
+                const isHead = Boolean(el.header ?? true) && r === 0 && tableRows(el).length > 1;
+                return (
+                  <td
+                    key={c}
+                    contentEditable
+                    suppressContentEditableWarning
+                    spellCheck={false}
+                    style={{ ...tableCellStyle(el, theme, isHead), outline: "none", cursor: "text" }}
+                    onBlur={(e) => onCell?.(r, c, e.currentTarget.innerText)}
+                    onKeyDown={(e) => {
+                      // Enter commits and leaves; Shift+Enter inserts a line break.
+                      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); e.currentTarget.blur(); }
+                      if (e.key === "Escape") { e.preventDefault(); e.currentTarget.blur(); }
+                    }}
+                  >
+                    {cell}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    ) : (
+      <div className="kx" style={{ width: "100%", height: "100%" }}
+        dangerouslySetInnerHTML={{ __html: tableHTML(el, theme, (cell) => renderMixed(String(cell || ""))) }} />
+    );
   } else if (el.type === "line") {
     inner = <div style={shapeInnerStyle(el)}><div style={lineBarStyle(el)} /></div>;
   } else if (el.type === "image") {
@@ -1011,9 +1113,18 @@ function SlidesPanel({ slides, current, theme, onSelect, onAdd, onDup, onDelete 
           <button key={sl.id} onClick={() => onSelect(i)} className={`group relative block w-full overflow-hidden rounded-lg ring-1 transition ${i === current ? "ring-2 ring-brand-400" : "ring-white/10 hover:ring-brand-400/50"}`}>
             <span className="absolute left-1.5 top-1.5 z-10 rounded bg-black/40 px-1.5 text-[10px] font-bold text-white">{i + 1}</span>
             <div className="aspect-video p-2 text-left" style={{ ...slideBg(sl, t), color: t.text }}>
-              {sl.elements.filter((e) => e.type === "text" || !e.type).slice(0, 3).map((e) => (
-                <div key={e.id} className="truncate" style={{ fontSize: Math.max(5, e.fontSize / 5), fontWeight: e.bold ? 700 : 400 }}>{e.content.replace(/\$/g, "")}</div>
-              ))}
+              {/* A table shows its first row rather than nothing — a slide whose only content
+                  is a table used to look empty in this list. */}
+              {sl.elements
+                .filter((e) => e.type === "text" || !e.type || e.type === "table")
+                .slice(0, 3)
+                .map((e) => (
+                  <div key={e.id} className="truncate" style={{ fontSize: Math.max(5, (e.fontSize || 15) / 5), fontWeight: e.bold ? 700 : 400 }}>
+                    {e.type === "table"
+                      ? (tableRows(e)[0] || []).join(" · ").replace(/\$/g, "")
+                      : String(e.content || "").replace(/\$/g, "")}
+                  </div>
+                ))}
             </div>
           </button>
         );
@@ -1037,6 +1148,14 @@ function StaticSlide({ sl, theme }) {
           return (
             <div key={el.id} style={frame}>
               <div className="kx" style={textStyle(el, theme)} dangerouslySetInnerHTML={{ __html: renderMixed(el.content || "") }} />
+            </div>
+          );
+        }
+        if (el.type === "table") {
+          return (
+            <div key={el.id} style={frame}>
+              <div className="kx" style={{ width: "100%", height: "100%" }}
+                dangerouslySetInnerHTML={{ __html: tableHTML(el, theme, (cell) => renderMixed(String(cell || ""))) }} />
             </div>
           );
         }

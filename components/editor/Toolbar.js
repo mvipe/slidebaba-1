@@ -15,7 +15,7 @@ import { listGlobalFonts, ensureFontLoaded } from "@/lib/admin";
 const SIZES = [10, 12, 14, 16, 18, 20, 24, 28, 32, 40, 48, 60, 72, 96];
 const STROKES = [0, 1, 2, 3, 4, 6, 8, 12];
 
-export default function Toolbar({ el, onChange, onDelete, onUndo, onRedo, canUndo, canRedo, onArrange, onAlign, scope = "element", setScope, selActive = false }) {
+export default function Toolbar({ el, onChange, onDelete, onUndo, onRedo, canUndo, canRedo, onArrange, onAlign, onTableOp, scope = "element", setScope, selActive = false }) {
   const [adminFonts, setAdminFonts] = useState([]);
   useEffect(() => {
     listGlobalFonts().then((fonts) => {
@@ -30,6 +30,7 @@ export default function Toolbar({ el, onChange, onDelete, onUndo, onRedo, canUnd
   const isShape = el?.type === "rect" || el?.type === "ellipse";
   const isLine = el?.type === "line";
   const isImage = el?.type === "image";
+  const isTable = el?.type === "table";
   const hasShape = isShape || isLine;
 
   const AlignIcon = el?.align === "center" ? AlignCenter : el?.align === "right" ? AlignRight : AlignLeft;
@@ -51,11 +52,11 @@ export default function Toolbar({ el, onChange, onDelete, onUndo, onRedo, canUnd
           </div>
         )
       )}
-      <select value={isText ? el.fontFamily || "Inter" : "Inter"} disabled={!isText} onChange={(e) => upd({ fontFamily: e.target.value })}
+      <select value={isText || isTable ? el.fontFamily || "Inter" : "Inter"} disabled={!isText && !isTable} onChange={(e) => upd({ fontFamily: e.target.value })}
         className="max-w-[120px] shrink-0 rounded-md bg-ink-800 px-2 py-1.5 text-sm text-white ring-1 ring-inset ring-white/10 disabled:opacity-40">
         {allFonts.map((f) => <option key={f} value={f}>{f}</option>)}
       </select>
-      <select value={isText ? el.fontSize || 20 : 20} disabled={!isText} onChange={(e) => upd({ fontSize: Number(e.target.value) })}
+      <select value={isText || isTable ? el.fontSize || 20 : 20} disabled={!isText && !isTable} onChange={(e) => upd({ fontSize: Number(e.target.value) })}
         className="shrink-0 rounded-md bg-ink-800 px-2 py-1.5 text-sm text-white ring-1 ring-inset ring-white/10 disabled:opacity-40">
         {SIZES.map((s) => <option key={s} value={s}>{s}</option>)}
       </select>
@@ -88,6 +89,36 @@ export default function Toolbar({ el, onChange, onDelete, onUndo, onRedo, canUnd
             className="shrink-0 rounded-md bg-ink-800 px-2 py-1.5 text-sm text-white ring-1 ring-inset ring-white/10" title="Thickness">
             {STROKES.map((s) => <option key={s} value={s}>{s}px</option>)}
           </select>
+        </>
+      )}
+
+      {/* TABLE */}
+      {isTable && (
+        <>
+          <Divider />
+          <div className="flex shrink-0 items-center gap-1 rounded-md bg-ink-800 p-0.5 ring-1 ring-inset ring-white/10">
+            <span className="px-1.5 text-[11px] font-bold text-slate-400">Rows</span>
+            <button onClick={() => onTableOp?.("addRow")} title="Add row" className="rounded px-2 py-1 text-sm font-bold text-slate-300 hover:bg-white/10 hover:text-white">+</button>
+            <button onClick={() => onTableOp?.("delRow")} title="Remove last row" className="rounded px-2 py-1 text-sm font-bold text-slate-300 hover:bg-white/10 hover:text-white">−</button>
+          </div>
+          <div className="flex shrink-0 items-center gap-1 rounded-md bg-ink-800 p-0.5 ring-1 ring-inset ring-white/10">
+            <span className="px-1.5 text-[11px] font-bold text-slate-400">Cols</span>
+            <button onClick={() => onTableOp?.("addCol")} title="Add column" className="rounded px-2 py-1 text-sm font-bold text-slate-300 hover:bg-white/10 hover:text-white">+</button>
+            <button onClick={() => onTableOp?.("delCol")} title="Remove last column" className="rounded px-2 py-1 text-sm font-bold text-slate-300 hover:bg-white/10 hover:text-white">−</button>
+          </div>
+          <button
+            onClick={() => upd({ header: !(el.header ?? true) })}
+            title="Toggle header row"
+            className={`shrink-0 rounded-md px-2 py-1.5 text-[11px] font-bold ring-1 ring-inset transition ${(el.header ?? true) ? "bg-brand-gradient text-white ring-transparent" : "bg-ink-800 text-slate-400 ring-white/10 hover:text-white"}`}
+          >
+            Header
+          </button>
+          <ColorBtn title="Border colour" icon={<span className="text-[10px] font-bold text-white">LINE</span>} value={el.borderColor || "#94a3b8"} onChange={(v) => upd({ borderColor: v })} />
+          <select value={el.borderWidth ?? 1} onChange={(e) => upd({ borderWidth: Number(e.target.value) })}
+            className="shrink-0 rounded-md bg-ink-800 px-2 py-1.5 text-sm text-white ring-1 ring-inset ring-white/10" title="Border thickness">
+            {[0, 1, 2, 3, 4].map((n) => <option key={n} value={n}>{n}px</option>)}
+          </select>
+          <ColorBtn title="Header fill" icon={<span className="text-[10px] font-bold text-white">HDR</span>} value={el.headerFill || "#eef2f7"} onChange={(v) => upd({ headerFill: v })} />
         </>
       )}
 

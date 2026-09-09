@@ -1,12 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Search, FileText, Presentation, FileType2, Trash2, Plus } from "lucide-react";
 import Topbar from "@/components/dashboard/Topbar";
 import { useAuth } from "@/context/AuthContext";
-import { listDocuments, removeDocument, loadDocument } from "@/lib/docs";
+import { listDocuments, removeDocument, loadDocument, storedFormats } from "@/lib/docs";
 import { saveHandoff } from "@/lib/slideStore";
 import { fmtDate } from "@/lib/usage";
 
@@ -21,10 +21,25 @@ export default function DocumentsPage() {
   const [q, setQ] = useState("");
   const [opening, setOpening] = useState(null);
   const [loadError, setLoadError] = useState("");
+  const [listError, setListError] = useState("");
 
-  useEffect(() => {
-    if (user) listDocuments(user.uid).then((d) => { setDocs(d); setLoading(false); });
+  // A failed list used to render as "No documents here yet", which reads as data loss.
+  // Now the error is shown for what it is, with a way to retry.
+  const refresh = useCallback(async () => {
+    if (!user) return;
+    setLoading(true);
+    setLoadError("");
+    try {
+      setDocs(await listDocuments(user.uid));
+    } catch (e) {
+      console.error("[SlideBaba] listDocuments FAILED:", e);
+      setListError(e?.message || "Couldn't load your documents. Check your connection and try again.");
+    } finally {
+      setLoading(false);
+    }
   }, [user]);
+
+  useEffect(() => { refresh(); }, [refresh]);
 
   // Slides / notes HTML now live in a chunked subcollection (so they are no longer capped
   // at Firestore's 1 MiB per-document limit), which means opening a document has to fetch
@@ -36,7 +51,8 @@ export default function DocumentsPage() {
     try {
       const fmt = format || d.format || "slides";
       const full = await loadDocument(user.uid, d.id, fmt);
-      const doc = full || d;
+      if (!full) throw new Error("That document no longer exists.");
+      const doc = full;
       if (fmt === "notes") {
         saveHandoff({
           title: doc.name, format: "notes", notesHtml: doc.notesHtml || "", items: doc.items || [],
@@ -103,6 +119,16 @@ export default function DocumentsPage() {
 
         {loading ? (
           <p className="py-16 text-center text-sm text-slate-500">Loading…</p>
+        ) : listError ? (
+          <div className="grid place-items-center rounded-2xl bg-ink-850 p-16 text-center ring-1 ring-white/10">
+            <span className="grid h-14 w-14 place-items-center rounded-2xl bg-accent-500/15 text-accent-300 ring-1 ring-inset ring-accent-500/30">
+              <FileText className="h-7 w-7" />
+            </span>
+            <h2 className="mt-5 font-display text-xl font-bold text-white">Couldn&apos;t load your documents</h2>
+            <p className="mt-2 max-w-sm text-sm text-slate-400">{listError}</p>
+            <p className="mt-1 max-w-sm text-xs text-slate-500">Your documents are still saved — this is a loading problem, not a data problem.</p>
+            <button onClick={refresh} className="btn-primary mt-6">Try again</button>
+          </div>
         ) : filtered.length === 0 ? (
           <div className="grid place-items-center rounded-2xl bg-ink-850 p-16 text-center ring-1 ring-white/10">
             <span className="grid h-14 w-14 place-items-center rounded-2xl bg-brand-500/15 text-brand-300 ring-1 ring-inset ring-brand-500/30">
@@ -123,10 +149,23 @@ export default function DocumentsPage() {
                 <h3 className="mt-3 truncate font-semibold text-white" title={d.name}>{d.name}</h3>
                 <p className="text-xs text-slate-500">{fmtDate(d.createdAt?.toDate ? d.createdAt.toDate() : Date.now())}</p>
                 <div className="mt-4 flex min-w-0 items-center gap-2 border-t border-white/5 pt-3">
-                  <button onClick={() => open(d, "slides")} disabled={!!opening} className="flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md bg-brand-500/10 py-2 text-xs font-semibold text-brand-300 ring-1 ring-inset ring-brand-500/20 hover:bg-brand-500/20 disabled:opacity-50">
+                  {/* A format with nothing stored is disabled rather than offered. Opening one
+                      used to hand the editor an empty deck, which then saved itself as a NEW
+                      document and orphaned this one. */}
+                  <button
+                    onClick={() => open(d, "slides")}
+                    disabled={!!opening || !storedFormats(d).slides}
+                    title={storedFormats(d).slides ? "Open as slides" : "No slides version saved for this document"}
+                    className="flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md bg-brand-500/10 py-2 text-xs font-semibold text-brand-300 ring-1 ring-inset ring-brand-500/20 hover:bg-brand-500/20 disabled:cursor-not-allowed disabled:opacity-35"
+                  >
                     <Presentation className="h-3.5 w-3.5" /> {opening === d.id ? "Opening…" : "PPT"}
                   </button>
-                  <button onClick={() => open(d, "notes")} disabled={!!opening} className="flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md bg-sky-500/10 py-2 text-xs font-semibold text-sky-300 ring-1 ring-inset ring-sky-500/20 hover:bg-sky-500/20 disabled:opacity-50">
+                  <button
+                    onClick={() => open(d, "notes")}
+                    disabled={!!opening || !storedFormats(d).notes}
+                    title={storedFormats(d).notes ? "Open as A4 notes" : "No A4 notes version saved for this document"}
+                    className="flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md bg-sky-500/10 py-2 text-xs font-semibold text-sky-300 ring-1 ring-inset ring-sky-500/20 hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-35"
+                  >
                     <FileType2 className="h-3.5 w-3.5" /> A4
                   </button>
                   <button onClick={(e) => del(e, d)} className="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-ink-800 text-slate-400 ring-1 ring-inset ring-white/10 hover:text-accent-400">

@@ -1,0 +1,27 @@
+# SlideBaba — local PaddleOCR server
+#
+# Install into the venv you already have:
+#     C:\Users\DELL\paddleocr-test\venv\Scripts\python.exe -m pip install -r requirements.txt
+#
+# The models themselves are NOT here — PaddleOCR downloads them on the first run
+# (~1 GB, once) into %USERPROFILE%\.paddlex, and everything is offline after that.
+
+# The inference engine. CPU build; for an NVIDIA GPU install the matching
+# paddlepaddle-gpu wheel from https://www.paddlepaddle.org.cn/en instead and set
+# PADDLE_DEVICE=gpu.
+paddlepaddle>=3.0.0
+
+# PP-StructureV3: layout detection + text recognition + formula (LaTeX) + tables.
+#
+# The [doc-parser] extra is REQUIRED and easy to miss. A plain "pip install
+# paddleocr" installs text recognition only, and PP-StructureV3 then fails with
+# the unhelpful message "A dependency error occurred during pipeline creation".
+# The server degrades to plain text recognition in that case rather than dying,
+# but you lose layout, LaTeX formulas and table markup.
+paddleocr[doc-parser]>=3.0.0
+
+# Used to cap oversized phone photos before inference (PADDLE_MAX_PIXELS).
+pillow>=10.0.0
+
+# The HTTP server itself is Python's own http.server — no web framework needed,
+# which is one less thing to install and one less thing to break.

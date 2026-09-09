@@ -23,7 +23,12 @@ export default function OverviewPage() {
   const name = (profile?.fullName || user?.displayName || "there").split(" ")[0];
 
   useEffect(() => {
-    if (user) listDocuments(user.uid).then(setDocs);
+    // listDocuments now throws on failure (so the Documents page can tell the user the
+    // truth instead of showing an empty state). The dashboard just degrades quietly.
+    if (user) listDocuments(user.uid).then(setDocs).catch((e) => {
+      console.error("[SlideBaba] dashboard listDocuments failed:", e?.message || e);
+      setDocs([]);
+    });
   }, [user]);
 
   const thisMonth = docs.filter((d) => {
