@@ -24,7 +24,7 @@ export const maxDuration = 120;
  * way. That is what lets the toggle be a genuine A/B switch rather than two
  * different products.
  *
- * PaddleOCR (default)
+ * PaddleOCR (Model 2)
  *   - PP-StructureV3: layout detection + text recognition + formula (LaTeX) +
  *     tables in one pass. A transcription model, not a chat model, so nothing can
  *     be paraphrased, translated or invented.

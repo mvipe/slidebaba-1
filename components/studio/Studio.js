@@ -86,7 +86,7 @@ function looksThin(sections) {
  * page at a time and a 1600px upload, while the OpenAI API is fine with a couple
  * of pages in flight and wants a slightly larger image for `detail: "high"`.
  * ------------------------------------------------------------------------ */
-const ENGINE_STORAGE_KEY = "slidebaba.ocrEngine";
+const ENGINE_STORAGE_KEY = "slidebaba.ocrEngine.v2";
 
 const ENGINE_META = {
   openai: {
@@ -100,6 +100,15 @@ const ENGINE_META = {
     tileConcurrency: 2,
     // Each analyze chunk is a real model call here, so keep the fan-out modest.
     analyzeConcurrency: 2,
+    tries: 2,
+    // NO column-tile fallback for Model 1.
+    //
+    // The tile pass re-reads a page as two half-width images when the whole-page read
+    // looks like it lost options. That heuristic was written for PaddleOCR. On a hosted
+    // vision model it TRIPLES the cost and the wall-clock time of a page — three long
+    // completions instead of one — and a vision model rarely drops half a page in the
+    // first place. This is the single biggest reason Model 1 felt slow on dense papers.
+    tiles: false,
     sizes: [
       { maxDim: 1800, quality: 0.85 },
       { maxDim: 1500, quality: 0.78 },
@@ -116,6 +125,11 @@ const ENGINE_META = {
     concurrency: 1,
     tileConcurrency: 1,
     analyzeConcurrency: 4,
+    // ONE retry, not three. The local server already retries internally, and each attempt
+    // can burn the full PADDLE_OCR_MAX_WAIT_MS (240s) — four attempts meant a failing page
+    // took ~16 MINUTES to report anything at all.
+    tries: 1,
+    tiles: true,
     sizes: [
       { maxDim: 1600, quality: 0.82 },
       { maxDim: 1400, quality: 0.75 },
@@ -148,13 +162,13 @@ export default function Studio() {
 
   // Which OCR engine this scan uses. Remembered per browser so a user who prefers
   // one does not have to re-pick it on every visit.
-  const [engine, setEngine] = useState("paddle");
+  const [engine, setEngine] = useState("openai");
   const [engineInfo, setEngineInfo] = useState(null); // { default, engines:[{id,label,configured,free}] }
   const [notesBusy, setNotesBusy] = useState(false);
   // Remembers what has already been written for this document, so "Open" never fires a
   // second concurrent write of a payload the pipeline just saved.
   const savedRef = useRef(null);
-  const engineRef = useRef("paddle");
+  const engineRef = useRef("openai");
   engineRef.current = engine;
 
   // Restore the saved choice, then ask the server which engines are actually
@@ -181,6 +195,51 @@ export default function Studio() {
 
     return () => { alive = false; };
   }, []);
+
+  /* ---------------- "is anything actually happening?" ----------------
+   * A scan that shows "Reading page 0/2" and nothing else for five minutes is
+   * indistinguishable from a hang. Two cheap signals fix that: a running clock, and —
+   * for Model 2 — what its local server says it is doing. */
+
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (status !== "scanning") { setElapsed(0); return undefined; }
+    const t0 = Date.now();
+    const t = setInterval(() => setElapsed(Math.round((Date.now() - t0) / 1000)), 1000);
+    return () => clearInterval(t);
+  }, [status]);
+
+  const [serverNote, setServerNote] = useState("");
+  useEffect(() => {
+    if (status !== "scanning" || engine !== "paddle") { setServerNote(""); return undefined; }
+    let alive = true;
+    const check = async () => {
+      try {
+        const res = await fetch("/api/ocr", { cache: "no-store" });
+        const data = await res.json();
+        if (!alive) return;
+        const srv = data?.paddle?.reachable?.server;
+        if (!data?.paddle?.reachable?.reachable) {
+          setServerNote("Model 2's server stopped responding — check its window.");
+        } else if (srv?.structureError) {
+          // The most common one is a failed model download, which never resolves on
+          // its own. Saying so beats letting the scan run out its retry budget.
+          setServerNote(`Model 2 can't load its models: ${String(srv.structureError).slice(0, 160)}`);
+        } else if (srv && srv.warm === false) {
+          setServerNote("Model 2 is loading its models. The first run downloads about 1 GB — this happens once.");
+        } else if (srv?.degraded) {
+          setServerNote("Model 2 is running in reduced mode (no layout, formulas or tables).");
+        } else {
+          setServerNote("");
+        }
+      } catch { /* advisory only */ }
+    };
+    check();
+    const t = setInterval(check, 8000);
+    return () => { alive = false; clearInterval(t); };
+  }, [status, engine]);
+
+  const fmtElapsed = (sec) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
 
   const pickEngine = (id) => {
     setEngine(id);
@@ -226,8 +285,10 @@ export default function Studio() {
   // marginal connection still gets a page through.
 
   // OCR a single page with retries (handles transient rate-limits / timeouts on big jobs).
-  const ocrImage = async (image, tries = 3, engineId = engineRef.current) => {
-    const sizes = engineMeta(engineId).sizes;
+  const ocrImage = async (image, tries = null, engineId = engineRef.current) => {
+    const meta = engineMeta(engineId);
+    const sizes = meta.sizes;
+    if (tries == null) tries = meta.tries ?? 2;
     let lastErr;
     for (let attempt = 0; attempt <= tries; attempt++) {
       const size = sizes[Math.min(attempt, sizes.length - 1)];
@@ -301,18 +362,18 @@ export default function Studio() {
         let sections = [];
         let title = "";
         try {
-          const whole = await ocrImage(img, 3, eng);
+          const whole = await ocrImage(img, null, eng);
           title = whole.title || "";
           sections = whole.sections || [];
         } catch (e) { if (!firstErr) firstErr = e; }
 
         // Fallback: if the whole-page read looks incomplete, try 2 column tiles (in parallel) and
         // keep whichever is richer.
-        if (sections.length && looksThin(sections)) {
+        if (meta.tiles && sections.length && looksThin(sections)) {
           try {
             const tiles = await tilePageImage(img, 2, 0.08);
             const tileResults = await mapLimit(tiles, meta.tileConcurrency, async (t) => {   // same queue limit as above
-              try { const r = await ocrImage(t, 3, eng); return r.sections || []; } catch { return []; }
+              try { const r = await ocrImage(t, 1, eng); return r.sections || []; } catch { return []; }
             });
             const tileSecs = tileResults.flat();
             const merged = dedupeSections(tileSecs);
@@ -462,7 +523,7 @@ export default function Studio() {
           const src = pages[r.page];
           const { width, height } = await imageSize(src);
           const cropped = await cropImage(src, { x: r.fx * width, y: r.fy * height, w: r.fw * width, h: r.fh * height });
-          const ocr = await ocrImage(cropped, 3, engineRef.current);
+          const ocr = await ocrImage(cropped, null, engineRef.current);
           const text = ocr.sections.map((s) => `${s.heading ? s.heading + " " : ""}${s.body}`).join("\n").trim();
           return { title: `Snippet ${i + 1}`, text: text || ocr.title || "" };
         })
@@ -666,8 +727,21 @@ export default function Studio() {
                 ))}
               </div>
               {busy ? (
-                <div className="mt-4 flex items-center justify-center gap-2 rounded-xl bg-ink-800/60 px-4 py-3 text-sm font-semibold text-emerald-300 ring-1 ring-inset ring-white/5">
-                  <Loader2 className="h-4 w-4 animate-spin" /> {status === "loading" ? "Reading file…" : "Scanning & building…"}
+                <div className="mt-4 space-y-2">
+                  <div className="flex items-center justify-center gap-2 rounded-xl bg-ink-800/60 px-4 py-3 text-sm font-semibold text-emerald-300 ring-1 ring-inset ring-white/5">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    {status === "loading" ? "Reading file…" : "Scanning & building…"}
+                    {status === "scanning" && <span className="tabular-nums text-slate-400">{fmtElapsed(elapsed)}</span>}
+                  </div>
+                  {serverNote && (
+                    <p className="rounded-xl bg-sky-500/10 px-3 py-2.5 text-[11.5px] leading-snug text-sky-200 ring-1 ring-inset ring-sky-400/25">{serverNote}</p>
+                  )}
+                  {status === "scanning" && elapsed > 90 && engine === "openai" && (
+                    <p className="rounded-xl bg-ink-800/60 px-3 py-2.5 text-[11.5px] leading-snug text-slate-400 ring-1 ring-inset ring-white/5">
+                      Dense pages with a lot of formulas take a while — Model 1 writes out every
+                      equation as LaTeX, and that is a long answer per page.
+                    </p>
+                  )}
                 </div>
               ) : error && pages.length ? (
                 <button onClick={() => runPipelineOn(pages, docId, file?.name)} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 px-4 py-3 text-sm font-bold text-white shadow-soft transition hover:brightness-110">

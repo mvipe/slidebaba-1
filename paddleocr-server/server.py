@@ -148,6 +148,89 @@ DOC_PARSER_HINT = (
 )
 _STRUCTURE: Dict[str, Any] = {"available": None, "error": "", "warned": False}
 
+# --------------------------------------------------------------------------- #
+# where model weights are downloaded from                                      #
+# --------------------------------------------------------------------------- #
+#
+# PaddleX fetches weights from Baidu Object Storage (BOS) by default. BOS is often
+# unreachable outside China, and the failure reads as a local problem when it is a
+# reachability problem:
+#
+#     Encounter exception when download model from bos.
+#     No model source is available! Please check network or use local model files!
+#
+# PaddleX can use other hosts instead — that is why installing paddlex also installs the
+# huggingface and modelscope clients — selected with PADDLE_PDX_MODEL_SOURCE. The exact
+# accepted spelling is not consistent across versions, so rather than betting on one, a
+# download failure retries through the candidates below and the server reports which one
+# worked. Set PADDLE_MODEL_SOURCE to pin one and skip the search.
+MODEL_SOURCE_ENV = "PADDLE_PDX_MODEL_SOURCE"
+MODEL_SOURCE_CANDIDATES = [
+    "huggingface", "HuggingFace", "modelscope", "ModelScope", "aistudio", "AIStudio", "BOS",
+]
+
+_forced_source = _env("PADDLE_MODEL_SOURCE")
+if _forced_source:
+    os.environ[MODEL_SOURCE_ENV] = _forced_source
+
+_ACTIVE_SOURCE: Dict[str, str] = {"value": os.environ.get(MODEL_SOURCE_ENV, "") or "(default: BOS)"}
+
+_DOWNLOAD_FAIL_RE = re.compile(
+    r"download model|model source|hosting platform|\bbos\b|connection|timed? out|network|resolve",
+    re.I,
+)
+
+
+def _looks_like_download_failure(exc: Exception) -> bool:
+    return bool(_DOWNLOAD_FAIL_RE.search(f"{type(exc).__name__}: {exc}"))
+
+
+def _construct_with_sources(cls, kwargs: Dict[str, Any], what: str):
+    """
+    Build a pipeline; if the weights cannot be downloaded, try the other model hosts
+    before giving up. Turns a dead end into a slower first run.
+    """
+    try:
+        return _construct(cls, kwargs)
+    except Exception as exc:  # noqa: BLE001
+        if _forced_source or not _looks_like_download_failure(exc):
+            raise
+        log.warning("%s: could not download weights from the default host (%s)", what, str(exc)[:200])
+        log.warning("Trying the other model hosts — this is normal outside China.")
+
+    original = os.environ.get(MODEL_SOURCE_ENV)
+    last = None
+    for src in MODEL_SOURCE_CANDIDATES:
+        if src == original:
+            continue
+        os.environ[MODEL_SOURCE_ENV] = src
+        log.info("%s: retrying with %s=%s …", what, MODEL_SOURCE_ENV, src)
+        try:
+            obj = _construct(cls, kwargs)
+            _ACTIVE_SOURCE["value"] = src
+            log.info("%s: downloaded successfully from %s", what, src)
+            log.info("Pin it to skip this search next time:  set PADDLE_MODEL_SOURCE=%s", src)
+            return obj
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            if not _looks_like_download_failure(exc):
+                raise
+            log.warning("%s: %s did not work (%s)", what, src, str(exc)[:150])
+
+    if original is None:
+        os.environ.pop(MODEL_SOURCE_ENV, None)
+    else:
+        os.environ[MODEL_SOURCE_ENV] = original
+
+    log.error("-" * 66)
+    log.error("Could not download the models from ANY host.")
+    log.error("This is a network problem, not a PaddleOCR problem:")
+    log.error("  * try a different network or a VPN;")
+    log.error("  * or pin a host you can reach:  set PADDLE_MODEL_SOURCE=huggingface")
+    log.error("  * or use Model 1 in SlideBaba, which needs no local models.")
+    log.error("-" * 66)
+    raise last if last else RuntimeError("No model source available.")
+
 
 def _build_kwargs(lang: str) -> Dict[str, Any]:
     return {
@@ -194,7 +277,7 @@ def get_pipeline(lang: str):
         t0 = time.time()
         log.info("loading PP-StructureV3 (lang=%s, device=%s) …", lang, DEVICE)
         try:
-            _PIPELINES[lang] = _construct(PPStructureV3, _build_kwargs(lang))
+            _PIPELINES[lang] = _construct_with_sources(PPStructureV3, _build_kwargs(lang), f"PP-StructureV3 ({lang})")
         except Exception as exc:  # noqa: BLE001
             # The generic "A dependency error occurred" message names nothing, so
             # log the traceback too — that is where the missing module appears.
@@ -210,6 +293,11 @@ def get_pipeline(lang: str):
                 log.error("-" * 66)
             raise
         _STRUCTURE["available"] = True
+        # Clear a stale error from an earlier failed attempt (usually the warm-up).
+        # Reporting available:true AND an error at the same time is nonsense, and it
+        # cost a real debugging round.
+        _STRUCTURE["error"] = ""
+        _STATS["warm"] = True   # models are resident — that is what "warm" means
         log.info("PP-StructureV3 (%s) ready in %.1fs", lang, time.time() - t0)
         return _PIPELINES[lang]
 
@@ -223,7 +311,7 @@ def get_ocr(lang: str):
 
         t0 = time.time()
         log.info("loading PaddleOCR (lang=%s) …", lang)
-        _OCRS[lang] = _construct(
+        _OCRS[lang] = _construct_with_sources(
             PaddleOCR,
             {
                 "lang": lang,
@@ -232,7 +320,9 @@ def get_ocr(lang: str):
                 "use_doc_unwarping": UNWARP,
                 "use_textline_orientation": ORIENTATION,
             },
+            f"PaddleOCR ({lang})",
         )
+        _STATS["warm"] = True
         log.info("PaddleOCR (%s) ready in %.1fs", lang, time.time() - t0)
         return _OCRS[lang]
 
@@ -569,6 +659,7 @@ def health() -> Dict[str, Any]:
         "status": "ok",
         "engine": "PaddleOCR / PP-StructureV3",
         "warm": _STATS["warm"],
+        "modelSource": _ACTIVE_SOURCE["value"],
         "structureAvailable": _STRUCTURE["available"],
         "structureError": _STRUCTURE["error"],
         "degraded": _STRUCTURE["available"] is False,
