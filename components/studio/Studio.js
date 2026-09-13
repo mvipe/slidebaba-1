@@ -86,6 +86,9 @@ function looksThin(sections) {
  * page at a time and a 1600px upload, while the OpenAI API is fine with a couple
  * of pages in flight and wants a slightly larger image for `detail: "high"`.
  * ------------------------------------------------------------------------ */
+// v2: the v1 key was populated by the old Model 2 default rather than by a real choice,
+// so it must not be honoured — otherwise everyone who ever opened the Studio stays on
+// Model 2 even though the default is now Model 1.
 const ENGINE_STORAGE_KEY = "slidebaba.ocrEngine.v2";
 
 const ENGINE_META = {
@@ -109,10 +112,13 @@ const ENGINE_META = {
     // completions instead of one — and a vision model rarely drops half a page in the
     // first place. This is the single biggest reason Model 1 felt slow on dense papers.
     tiles: false,
+    // 1600px is what this was before the dual-engine work. Raising it to 1800 added
+    // image tiles at detail:"high" for no measurable accuracy gain — just a slower,
+    // more expensive call on every page.
     sizes: [
-      { maxDim: 1800, quality: 0.85 },
-      { maxDim: 1500, quality: 0.78 },
-      { maxDim: 1200, quality: 0.7 },
+      { maxDim: 1600, quality: 0.82 },
+      { maxDim: 1400, quality: 0.75 },
+      { maxDim: 1150, quality: 0.68 },
     ],
   },
   paddle: {
@@ -139,6 +145,8 @@ const ENGINE_META = {
 };
 
 const ENGINE_ORDER = ["openai", "paddle"];
+/** Fallback when the server has not answered yet — Model 1, matching lib/ocrEngine.js. */
+const FALLBACK_ENGINE = "openai";
 const engineMeta = (id) => ENGINE_META[id] || ENGINE_META.paddle;
 
 
@@ -162,13 +170,13 @@ export default function Studio() {
 
   // Which OCR engine this scan uses. Remembered per browser so a user who prefers
   // one does not have to re-pick it on every visit.
-  const [engine, setEngine] = useState("openai");
+  const [engine, setEngine] = useState(FALLBACK_ENGINE);
   const [engineInfo, setEngineInfo] = useState(null); // { default, engines:[{id,label,configured,free}] }
   const [notesBusy, setNotesBusy] = useState(false);
   // Remembers what has already been written for this document, so "Open" never fires a
   // second concurrent write of a payload the pipeline just saved.
   const savedRef = useRef(null);
-  const engineRef = useRef("openai");
+  const engineRef = useRef(FALLBACK_ENGINE);
   engineRef.current = engine;
 
   // Restore the saved choice, then ask the server which engines are actually
@@ -182,6 +190,7 @@ export default function Studio() {
 
     (async () => {
       try {
+        // Cheap call: which engines are configured. No network to the local server.
         const res = await fetch("/api/ocr", { cache: "no-store" });
         const data = await res.json();
         if (!alive || !data?.engines) return;
@@ -215,7 +224,7 @@ export default function Studio() {
     let alive = true;
     const check = async () => {
       try {
-        const res = await fetch("/api/ocr", { cache: "no-store" });
+        const res = await fetch("/api/ocr?live=1", { cache: "no-store" });
         const data = await res.json();
         if (!alive) return;
         const srv = data?.paddle?.reachable?.server;
@@ -259,13 +268,21 @@ export default function Studio() {
     engineInfo.paddle.reachable.reachable === false;
 
   // Re-check liveness — used after the user says they've started the server.
+  // ?live=1 pings Model 2's local server. Only ever called while the user is on Model 2.
   const recheckEngines = async () => {
     try {
-      const res = await fetch("/api/ocr", { cache: "no-store" });
+      const res = await fetch("/api/ocr?live=1", { cache: "no-store" });
       const data = await res.json();
       if (data?.engines) setEngineInfo(data);
     } catch {}
   };
+
+  // Selecting Model 2 is what earns the liveness check — not merely opening the Studio.
+  useEffect(() => {
+    if (engine !== "paddle") return;
+    recheckEngines();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine]);
 
   const reset = () => {
     setFile(null); setPages([]); setStatus("idle"); setItems(null); setSlides(null); setDocId(null); setError("");

@@ -532,7 +532,7 @@ export default function Editor() {
         <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
           <button onClick={() => router.push("/dashboard/studio")} className="grid h-9 w-9 shrink-0 place-items-center rounded-md text-slate-300 hover:bg-ink-700 hover:text-white"><ArrowLeft className="h-4 w-4" /></button>
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/logo.svg" alt="SlideBaba" className="hidden h-8 w-8 rounded-md sm:block" />
+          <img src="/logo.png" alt="SlideBaba" className="hidden h-8 w-8 rounded-md sm:block" />
           <div className="min-w-0 flex-1">
             <input value={title} onChange={(e) => { setTitle(e.target.value); hasEditedRef.current = true; markDirty(); }} className="w-full min-w-0 bg-transparent font-display text-sm font-bold text-white outline-none" />
             <p className="text-[11px] text-slate-500">{slides.length} slides</p>

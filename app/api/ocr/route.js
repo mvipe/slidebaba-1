@@ -24,7 +24,7 @@ export const maxDuration = 120;
  * way. That is what lets the toggle be a genuine A/B switch rather than two
  * different products.
  *
- * PaddleOCR (Model 2)
+ * PaddleOCR (default)
  *   - PP-StructureV3: layout detection + text recognition + formula (LaTeX) +
  *     tables in one pass. A transcription model, not a chat model, so nothing can
  *     be paraphrased, translated or invented.
@@ -119,16 +119,25 @@ export async function POST(request) {
 export async function GET(request) {
   let probe = null;
   let engineParam = null;
+  let live = null;
   try {
     const q = new URL(request?.url || "http://localhost/api/ocr").searchParams;
     probe = q.get("probe");
     engineParam = q.get("engine");
+    live = q.get("live");
   } catch { /* no query string */ }
 
-  // The no-probe call is the one people open when a scan just failed, so it does
-  // the cheap liveness check too — "configured" alone has never been the answer
-  // to "why did my scan fail".
-  if (!probe) return NextResponse.json({ ok: true, ...(await enginesHealthLive()) });
+  // Liveness is OPT-IN (?live=1).
+  //
+  // The liveness check pings PaddleOCR's local server, and when that server is not
+  // running the ping costs up to 5 seconds. Doing it on every health call meant a
+  // Model 1 user — who has nothing to do with PaddleOCR — paid for PaddleOCR being
+  // down. Model 1 must never wait on Model 2 for anything.
+  if (!probe) {
+    const flag = String(live || "").toLowerCase();
+    const wantLive = flag === "1" || flag === "true" || flag === "yes";
+    return NextResponse.json({ ok: true, ...(wantLive ? await enginesHealthLive() : enginesHealth()) });
+  }
 
   const health = enginesHealth();
 

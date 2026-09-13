@@ -41,7 +41,7 @@ export default function Sidebar() {
         <div className="flex items-center justify-between">
           <Link href="/dashboard" onClick={close} className="flex items-center gap-2.5 px-2 py-3">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/logo.svg" alt="SlideBaba" className="h-9 w-9 rounded-xl shadow-soft" />
+            <img src="/logo.png" alt="SlideBaba" className="h-9 w-9 rounded-xl shadow-soft" />
             <span>
               <span className="block font-display text-base font-extrabold leading-none text-white">Slide<span className="gradient-text">Baba</span></span>
               <span className="text-[10px] font-bold uppercase tracking-widest text-brand-400">Workspace</span>

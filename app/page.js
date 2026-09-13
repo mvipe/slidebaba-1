@@ -8,10 +8,11 @@ import { useAuth } from "@/context/AuthContext";
 import {
   ArrowRight, Sparkles, UploadCloud, Brain, DownloadCloud, Upload, Check, X as XIcon,
   GraduationCap, Presentation, Laptop, Crosshair, LayoutGrid, Scissors, Rocket, Crown,
-  FileUp, Zap, Bot, CheckCircle2, FileText, MonitorPlay, Play,
+  FileUp, Zap, Bot, CheckCircle2, FileText, MonitorPlay,
 } from "lucide-react";
 import LandingNav from "@/components/landing/LandingNav";
 import Logo from "@/components/Logo";
+import WatchTutorial from "@/components/WatchTutorial";
 
 /* ---------- motion helpers ---------- */
 const fade = {
@@ -123,7 +124,7 @@ export default function LandingPage() {
             </motion.p>
             <motion.div variants={fade} initial="hidden" animate="show" custom={3} className="mt-8 flex flex-col gap-3 sm:flex-row">
               <Link href="/register" className="btn bg-ink-900 text-white shadow-soft hover:-translate-y-0.5 dark:bg-white dark:text-ink-900"><UploadCloud className="h-5 w-5" /> Upload Document</Link>
-              <a href="#how" className="l-ghost text-base"><Play className="h-4 w-4" /> Watch Demo</a>
+              <WatchTutorial className="l-ghost text-base" label="Watch tutorial" />
             </motion.div>
             <motion.div variants={fade} initial="hidden" animate="show" custom={4} className="mt-8 flex flex-wrap gap-x-6 gap-y-2 text-sm l-muted">
               <span className="flex items-center gap-2"><Check className="h-4 w-4 text-emerald-500" /> 99.9% OCR accuracy</span>

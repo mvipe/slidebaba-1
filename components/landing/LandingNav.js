@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Menu, X } from "lucide-react";
 import Logo from "@/components/Logo";
 import ThemeToggle from "@/components/ThemeToggle";
+import WatchTutorial from "@/components/WatchTutorial";
 
 const LINKS = [
   { label: "Features", href: "#features" },
@@ -31,6 +32,10 @@ export default function LandingNav() {
         </Link>
 
         <div className="hidden items-center gap-8 md:flex">
+          <WatchTutorial
+            className="flex items-center gap-1.5 text-sm font-medium text-slate-600 transition hover:text-ink-900 dark:text-slate-300 dark:hover:text-white"
+            label="Tutorial"
+          />
           {LINKS.map((l) => (
             <a
               key={l.label}
@@ -77,6 +82,10 @@ export default function LandingNav() {
                 {l.label}
               </a>
             ))}
+            <WatchTutorial
+              className="flex items-center gap-2 rounded-lg px-3 py-2.5 text-left text-sm font-medium text-slate-700 hover:bg-black/5 dark:text-slate-300 dark:hover:bg-ink-800"
+              label="Watch tutorial"
+            />
             <Link href="/register" onClick={() => setOpen(false)} className="btn-cool mt-2">
               Get started free
             </Link>

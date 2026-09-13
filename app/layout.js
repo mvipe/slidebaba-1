@@ -21,8 +21,20 @@ export const metadata = {
   title: "SlideBaba — AI Study Assistant",
   description:
     "Turn documents, question papers and handwritten notes into editable PPT slides and A4 study notes with AI-grade OCR.",
-   icons: { icon: "/favicon.ico" },
-  };
+  icons: {
+    icon: [
+      { url: "/favicon.ico", sizes: "any" },
+      { url: "/icon.png", type: "image/png", sizes: "256x256" },
+    ],
+    apple: [{ url: "/apple-icon.png", sizes: "180x180" }],
+  },
+  openGraph: {
+    title: "SlideBaba — AI Study Assistant",
+    description:
+      "Turn documents, question papers and handwritten notes into editable PPT slides and A4 study notes.",
+    images: ["/logo-512.png"],
+  },
+};
 
 export const viewport = {
   width: "device-width",

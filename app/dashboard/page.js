@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { Menu } from "lucide-react";
 import PlanBadges from "@/components/dashboard/PlanBadges";
+import { TutorialCard } from "@/components/WatchTutorial";
 import { useSidebar } from "@/components/dashboard/sidebarStore";
 import { useAuth } from "@/context/AuthContext";
 import { listDocuments, loadDocument } from "@/lib/docs";
@@ -90,6 +91,9 @@ export default function OverviewPage() {
             </div>
           ))}
         </div>
+
+        {/* tutorial */}
+        <TutorialCard className="mt-6" />
 
         {/* quick generate */}
         <div className="mt-6 overflow-hidden rounded-3xl bg-ink-850 p-6 ring-1 ring-white/10 sm:p-8">

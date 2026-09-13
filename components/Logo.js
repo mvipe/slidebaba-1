@@ -3,7 +3,7 @@ export default function Logo({ showText = true, size = 36, className = "" }) {
   return (
     <span className={`group inline-flex items-center gap-2.5 ${className}`}>
       <img
-        src="/logo.svg"
+        src="/logo.png"
         alt="SLIDE BABA"
         width={size}
         height={size}

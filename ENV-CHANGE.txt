@@ -1,0 +1,18 @@
+SlideBaba - make Model 1 (ChatGPT) the default
+==============================================
+
+Your .env.local currently has:
+
+    OCR_ENGINE_DEFAULT=paddle
+    NEXT_PUBLIC_OCR_ENGINE_DEFAULT=paddle
+
+The environment variable OVERRIDES the code default, so until you change these two
+lines the Studio will still open on Model 2. Edit them to:
+
+    OCR_ENGINE_DEFAULT=openai
+    NEXT_PUBLIC_OCR_ENGINE_DEFAULT=openai
+
+Then restart:  npm run dev
+
+Nothing else in .env.local needs to change. Leave the PADDLE_* lines as they are -
+Model 2 still works when you start its server; it is just no longer the default.
