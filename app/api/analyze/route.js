@@ -5,7 +5,7 @@ import { resolveEngine, ENGINE_LABEL } from "@/lib/ocrEngine";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 120;
+export const maxDuration = 300;
 
 /**
  * POST /api/analyze

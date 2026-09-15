@@ -6,7 +6,13 @@ import { buildDocument } from "@/lib/ocrStructure";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 120;
+// 300s (was 120). A dense page that truncates now makes one or more short "continue from
+// where you stopped" calls to finish transcribing every question, so a single /api/ocr
+// request can legitimately need more than two minutes. The per-page work is still bounded
+// by OPENAI_MAX_WAIT_MS; this only stops the platform from killing the request first.
+// (Hosts cap this to their own maximum — e.g. Vercel by plan tier — so it is a request,
+// not a guarantee.)
+export const maxDuration = 300;
 
 /**
  * POST /api/ocr

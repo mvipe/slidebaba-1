@@ -73,15 +73,30 @@ Not cosmetic — this is what makes both engines feel the same:
 
 | | PaddleOCR | ChatGPT |
 | --- | --- | --- |
-| Pages in flight | 1 | 2 |
-| Column tiles in flight | 1 | 2 |
-| `/api/analyze` chunks in flight | 4 (local, free) | 2 (real GPT calls) |
-| Upload size, 1st try | 1600px / q0.82 | 1800px / q0.85 |
-| Retry sizes | 1400, 1150 | 1500, 1200 |
+| Pages in flight | 1 | 4 |
+| Column tiles in flight | 1 | 3 |
+| `/api/analyze` chunks in flight | 4 (local, free) | 3 (real GPT calls) |
+| Upload size, 1st try | 1600px / q0.82 | 1600px / q0.82 |
+| Retry sizes | 1400, 1150 | 1400, 1150 |
+| Vision output ceiling | n/a | 16000 tokens, then continuation |
 
 PaddleOCR holds one model in memory and is fastest when it is not fighting itself
-for CPU, so one page at a time. The OpenAI API is happy with a couple in flight
-and wants a slightly larger image for `detail: "high"`.
+for CPU, so one page at a time. The OpenAI API is happy with several pages in
+flight — four at once (was two) roughly halves the wall-clock time of a multi-page
+PDF, which is the main reason Model 1 used to feel slow. Any rate-limit (429) still
+backs off and retries on its own, so four is safe on a normal tier; lower
+`OPENAI_CONCURRENCY` if your account hits limits.
+
+**Vision output ceiling + continuation (the accuracy fix).** A dense page — say 20
+questions with options and LaTeX — can need more output tokens than one completion
+is allowed. The old 8000-token ceiling was often hit, the model stopped with
+`finish_reason: "length"`, and the *last several questions were silently dropped*
+(the "20 in, 12–16 out" bug). The ceiling is now 16000, and if a page still
+truncates, `lib/openaiOcr.js` asks the model to **continue from exactly where it
+stopped** (it can still see the same image) and stitches the pieces together,
+de-duplicating the seam — up to `OPENAI_MAX_CONTINUATIONS` times, always within the
+request budget. Ordinary pages finish in one call and pay nothing extra; only a
+genuinely oversized page makes a follow-up call.
 
 ---
 
@@ -112,7 +127,9 @@ the deployment caveat.
 OPENAI_VISION_MODEL=gpt-4o        # page transcription
 OPENAI_SPLIT_MODEL=gpt-4o-mini    # question splitting
 OPENAI_VISION_DETAIL=high         # low | high | auto
-OPENAI_CONCURRENCY=2
+OPENAI_MAX_TOKENS=16000           # output ceiling per page — high so dense pages aren't cut off
+OPENAI_MAX_CONTINUATIONS=4        # extra "continue where you stopped" calls for a truncated page
+OPENAI_CONCURRENCY=4              # pages read in parallel — higher = faster PDFs, more rate-limit risk
 ```
 
 Leaving `OPENAI_API_KEY` empty hides the ChatGPT option in the Studio entirely.
@@ -259,3 +276,9 @@ tokens for the image plus the transcription tokens out), and one `gpt-4o-mini`
 call per 14-section analyze chunk. Check current pricing at
 <https://openai.com/api/pricing> — it changes, and a 40-page paper is 40 vision
 calls, not one.
+
+A page dense enough to truncate makes one or more **continuation** calls on top of
+its first read (each re-sends the image, so it costs like another page). This only
+happens on genuinely oversized pages, and it is the deliberate trade: a few extra
+tokens on the hardest pages, in exchange for never dropping their last questions.
+Cap it with `OPENAI_MAX_CONTINUATIONS`.

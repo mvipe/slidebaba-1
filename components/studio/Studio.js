@@ -97,12 +97,16 @@ const ENGINE_META = {
     label: "Model 1",
     sub: "ChatGPT",
     Icon: Bot,
-    // Two in flight is comfortably inside a normal rate limit and roughly halves the
-    // wall-clock time on a long PDF.
-    concurrency: 2,
-    tileConcurrency: 2,
-    // Each analyze chunk is a real model call here, so keep the fan-out modest.
-    analyzeConcurrency: 2,
+    // Four pages in flight (was 2). This is the main lever on how long a multi-page PDF
+    // takes end to end: each page's own read time is unchanged, but reading four at once
+    // instead of two roughly halves the wall-clock again. Four is comfortably inside a
+    // normal OpenAI rate limit; any 429 still backs off and retries on its own, and the
+    // server gate (OPENAI_CONCURRENCY, now 4) matches so pages don't just queue there.
+    concurrency: 4,
+    tileConcurrency: 3,
+    // Each analyze chunk is a real model call here, so keep the fan-out modest — but 3 in
+    // flight instead of 2 shaves the second (splitting) wait on long papers too.
+    analyzeConcurrency: 3,
     tries: 2,
     // NO column-tile fallback for Model 1.
     //
