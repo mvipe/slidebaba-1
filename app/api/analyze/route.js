@@ -87,11 +87,17 @@ export async function POST(request) {
     );
   }
 
-  if (engine !== "openai") {
-    return NextResponse.json({ ok: true, items: local, engine: "paddle", splitter: "local-rules" });
+  // The local rules splitter is deterministic and complete — it cannot truncate, drop a
+  // question, or summarise, and it now handles numbered lists, headings-as-stems and every
+  // option style. The GPT splitter can silently lose text, so it is OFF by default and only
+  // used when explicitly enabled with OPENAI_USE_GPT_SPLIT=1. Model 1 still uses GPT to READ
+  // the page (the vision step); only the splitting into slides is kept local for reliability.
+  const useGptSplit = /^(1|true|yes|on)$/i.test(String(process.env.OPENAI_USE_GPT_SPLIT || ""));
+  if (engine !== "openai" || !useGptSplit) {
+    return NextResponse.json({ ok: true, items: local, engine, splitter: "local-rules" });
   }
 
-  // ---- ChatGPT splitter, with the local result standing by ----
+  // ---- ChatGPT splitter (opt-in), with the local result standing by ----
   let note = "";
   try {
     const run = await openaiSplit(title, sections, getOpenAIConfig());
