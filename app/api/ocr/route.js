@@ -56,7 +56,7 @@ export async function POST(request) {
   try { body = await request.json(); }
   catch { return bad("Invalid JSON body.", 400); }
 
-  const { image, name, engine: requested } = body || {};
+  const { image, name, engine: requested, part, fast } = body || {};
   if (!image) return bad("Missing 'image' in request.", 400);
 
   const pick = resolveEngine(requested);
@@ -65,8 +65,27 @@ export async function POST(request) {
   const engine = pick.engine;
   const cfg = engine === "openai" ? getOpenAIConfig() : getPaddleConfig();
 
+  // The Studio reads each page as a whole AND as overlapping high-resolution slices.
+  // A slice must be transcribed without the model trying to invent the half it cannot
+  // see, so the slice's position is passed through to the prompt. Sanitised here
+  // because it goes straight into a prompt.
+  const sliceInfo = part && Number.isFinite(Number(part.index)) && Number(part.total) > 1
+    ? {
+        index: Math.max(0, Math.min(19, Math.floor(Number(part.index)))),
+        total: Math.max(2, Math.min(20, Math.floor(Number(part.total)))),
+        kind: part.kind === "column" ? "column" : "band",
+      }
+    : null;
+
+  // Fast lane unless the Studio explicitly asked for the accurate one. Defaulting to
+  // fast matters: a scan that never finishes is worth less than a scan that is 98% right.
+  const openaiOpts = { fast: fast !== false };
+  if (sliceInfo) openaiOpts.part = sliceInfo;
+
   try {
-    const run = engine === "openai" ? await openaiOcr(image, cfg) : await paddleOcr(image, cfg);
+    const run = engine === "openai"
+      ? await openaiOcr(image, cfg, openaiOpts)
+      : await paddleOcr(image, cfg);
 
     if (!run.ok) {
       if (cfg.debug) {
@@ -86,6 +105,16 @@ export async function POST(request) {
     const doc = buildDocument(run.result, name || "Untitled Document");
 
     if (!doc.sections.length) {
+      // A SLICE may legitimately be blank — the bottom band of a half-empty page has
+      // nothing on it. Reporting that as a failure made the client burn two pointless
+      // retries per blank slice, which on a long PDF is minutes of nothing. A blank
+      // whole page is still worth reporting.
+      if (sliceInfo) {
+        return NextResponse.json({
+          ok: true, title: "", sections: [], empty: true,
+          engine, engineLabel: ENGINE_LABEL[engine], part: sliceInfo,
+        });
+      }
       return bad(
         `${ENGINE_LABEL[engine]} could not read any text on this page. Try a clearer or higher-resolution scan.`,
         200,
@@ -97,7 +126,9 @@ export async function POST(request) {
       ok: true,
       title: doc.title || "Untitled Document",
       sections: doc.sections,
+      part: sliceInfo,
       model: run.model || ENGINE_LABEL[engine],
+      lane: run.lane || null,
       backend: run.backend,
       engine,
       engineLabel: ENGINE_LABEL[engine],

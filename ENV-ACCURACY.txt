@@ -1,0 +1,92 @@
+================================================================================
+SlideBaba — .env.local  (SPEED FIX — replaces the earlier instructions)
+================================================================================
+
+The earlier block made every scan slow. This one is shorter: you mostly DELETE.
+
+--------------------------------------------------------------------------------
+STEP 1 — DELETE all of these lines from .env.local
+--------------------------------------------------------------------------------
+OPENAI_VISION_MODEL=gpt-4o
+OPENAI_VISION_MODEL=gpt-6-astra
+OPENAI_SPLIT_MODEL=gpt-4o-mini
+OPENAI_VISION_DETAIL=high
+OPENAI_REASONING_EFFORT=high
+OPENAI_MAX_TOKENS=24000
+OPENAI_TIMEOUT_MS=90000
+OPENAI_TIMEOUT_MS=120000
+OPENAI_MAX_WAIT_MS=150000
+OPENAI_MAX_WAIT_MS=210000
+OPENAI_CONCURRENCY=2
+OPENAI_CONCURRENCY=6
+
+(Delete whichever of these you actually have. Some are from the original file,
+some from the block I gave you last time.)
+
+THE TWO THAT WERE KILLING IT
+  OPENAI_REASONING_EFFORT=high
+      gpt-6-astra is a REASONING model — it thinks before it answers. At `high`
+      effort the first token can take minutes. But transcription is not a
+      reasoning task: there is no chain of inference between the pixels and the
+      characters. OpenAI's own guidance puts extraction at `low`. This was the
+      single biggest time sink.
+  OPENAI_CONCURRENCY=6
+      Every page goes through one Next.js process, so this number is the whole
+      pipeline's throughput. At 6 in flight, a 100-page scan in max mode is 300
+      calls queueing 6 at a time — nothing the browser does can speed that up.
+
+--------------------------------------------------------------------------------
+STEP 2 — ADD this block
+--------------------------------------------------------------------------------
+# ---- Model 1 (ChatGPT) ----
+OPENAI_VISION_MODEL_FAST=gpt-5.4
+OPENAI_VISION_MODEL=gpt-5.4
+OPENAI_VISION_FALLBACKS=gpt-6-astra,gpt-5,gpt-4.1,gpt-4o
+OPENAI_SPLIT_MODEL=gpt-5-mini
+OPENAI_CONCURRENCY=12
+
+That is all. Everything else now has the right value built into the code, so
+anything you leave out is simply correct. If you would rather not edit at all,
+you can delete the whole OpenAI block from .env.local except OPENAI_API_KEY and
+it will run exactly like the above.
+
+--------------------------------------------------------------------------------
+STEP 3 — (recommended) make Model 1 the default engine
+--------------------------------------------------------------------------------
+OCR_ENGINE_DEFAULT=openai
+NEXT_PUBLIC_OCR_ENGINE_DEFAULT=openai
+
+--------------------------------------------------------------------------------
+STEP 4 — restart
+--------------------------------------------------------------------------------
+Ctrl+C the dev server, then `npm run dev`. .env.local is only read at startup.
+
+Check:  http://localhost:3000/api/ocr
+        "fastModel": "gpt-5.4"   "fastEffort": "low"   "concurrency": 12
+
+Live test (this is the one to run if a scan does nothing at all):
+        http://localhost:3000/api/ocr?probe=1&engine=openai
+It returns the model that actually answered and the time it took. If it errors,
+the message names the real reason — key, quota, or model access.
+
+
+================================================================================
+FAST vs MAX ACCURACY — now a button in the Studio
+================================================================================
+There is a new toggle under the Model 1 / Model 2 buttons.
+
+  FAST  (default)   one read per page, 6 pages in flight.
+  MAX ACCURACY      each page also re-read in high-resolution slices. About 3x
+                    the calls, 3x the cost, 3x the time.
+
+Fast is the default on purpose. A 100-page scan that finishes in a few minutes
+and is 98% right is worth more than one that is 99.5% right and takes two hours,
+because nobody waits two hours. Turn Max on for a dense Hindi paper where the
+matras actually matter, and leave it off for everything else.
+
+While a scan runs, the panel now shows the measured seconds-per-page and the
+model that answered. If something is slow, those two numbers say why.
+
+================================================================================
+NOTHING TO INSTALL — no package, no SDK, no download.
+================================================================================

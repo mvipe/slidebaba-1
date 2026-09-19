@@ -12,7 +12,7 @@ import {
 } from "firebase/auth";
 import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
-import { maybeRenew } from "@/lib/plan";
+import { maybeRenew, planLimits } from "@/lib/plan";
 
 const AuthContext = createContext(null);
 
@@ -60,6 +60,13 @@ export function AuthProvider({ children }) {
     const cred = await createUserWithEmailAndPassword(auth, email, password);
     await updateProfile(cred.user, { displayName: fullName });
 
+    // The free plan's OWN allowance, not zero.
+    //
+    // This used to write docsLimit: 0 / snipsLimit: 0. remaining() reads
+    // `profile.docsLimit ?? planDefault`, and `??` keeps a stored ZERO — so every
+    // brand-new free account had a limit of 0 documents and was shown the payment
+    // modal on its very first upload, before it had scanned anything at all.
+    const freeLimits = planLimits("free", "monthly");
     const profileData = {
       uid: cred.user.uid,
       fullName,
@@ -67,9 +74,9 @@ export function AuthProvider({ children }) {
       phone: e164,
       plan: "free",
       period: "monthly",
-      docsLimit: 0,
+      docsLimit: freeLimits.docs,
       docsUsed: 0,
-      snipsLimit: 0,
+      snipsLimit: freeLimits.snips,
       snipsUsed: 0,
       createdAt: serverTimestamp(),
     };
