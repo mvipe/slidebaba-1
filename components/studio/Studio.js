@@ -364,6 +364,42 @@ const range = (from, to) => Array.from({ length: Math.max(0, to - from) }, (_, k
 /** "3:07" */
 const fmtClock = (sec) => `${Math.floor(sec / 60)}:${String(Math.max(0, Math.round(sec % 60))).padStart(2, "0")}`;
 
+/* -------------------------------------------------------------------------- */
+/* save failures                                                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Turn a Firestore failure into a sentence that names the actual cause.
+ *
+ * The old message — "this document could not be created in your account" — was true and
+ * completely useless: it named the symptom, buried the reason in console.error, and gave
+ * no next step. Firestore's error CODE is the whole diagnosis, so it goes in the message.
+ */
+function describeSaveFailure(err, phase = "save") {
+  const code = String(err?.code || "").replace(/^firestore\//, "");
+  const raw = String(err?.message || err || "unknown error");
+  const what = phase === "create"
+    ? "This document could not be created in your account, so it won't appear in My Documents."
+    : "Your result could not be saved to your account.";
+  const tail = " Your scan still runs — download the result before leaving this page.";
+
+  switch (code) {
+    case "permission-denied":
+      return `${what} Firestore refused the write (permission-denied) — your session may have expired. Sign out and back in.${tail}`;
+    case "resource-exhausted":
+      return `${what} Your Firebase project has hit its write quota for today (resource-exhausted). It resets at midnight Pacific time, or raise the quota in the Firebase console.${tail}`;
+    case "unavailable":
+    case "timeout":
+      return `${what} Could not reach Firestore (${code || "network"}) — the connection dropped.${tail}`;
+    case "unauthenticated":
+      return `${what} You are signed out (unauthenticated). Sign in again.${tail}`;
+    case "invalid-argument":
+      return `${what} Firestore rejected the data (invalid-argument): ${raw}${tail}`;
+    default:
+      return `${what} Reason: ${code ? `${code} — ` : ""}${raw}${tail}`;
+  }
+}
+
 
 export default function Studio() {
   const router = useRouter();
@@ -539,6 +575,35 @@ export default function Studio() {
     savedRef.current = null;
   };
 
+  /**
+   * Create the document record, retrying a transient failure.
+   *
+   * One rejected write used to cost the user the whole record — every later save was
+   * skipped because `id` stayed null, so the scan ran, finished, and appeared nowhere.
+   * Most Firestore failures here are transient (a dropped connection, a cold start), and
+   * three tries over ~6 seconds clears those. A permission or quota error is permanent,
+   * so it is not retried — it is reported immediately with its real cause.
+   */
+  const createDocRecord = async ({ name, total, eng }) => {
+    const permanent = new Set(["permission-denied", "unauthenticated", "invalid-argument"]);
+    let lastErr = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const ref = await saveDocument(user.uid, {
+          name, status: "processing", mode, engine: eng, pages: total,
+        });
+        if (ref?.id) return { id: ref.id, error: null };
+        lastErr = new Error("Firestore returned no document id.");
+      } catch (e) {
+        lastErr = e;
+        console.error(`[SlideBaba] document create attempt ${attempt + 1} failed:`, e?.code || "", e?.message || e);
+        if (permanent.has(String(e?.code || "").replace(/^firestore\//, ""))) break;
+      }
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+    }
+    return { id: null, error: lastErr };
+  };
+
   /* ------------------------------------------------------------------------ */
   /* OCR                                                                       */
   /* ------------------------------------------------------------------------ */
@@ -659,6 +724,7 @@ export default function Studio() {
       return {
         total: doc.numPages,
         get: (i) => doc.renderPage(i + 1, { maxDim: PAGE_MAX_DIM, quality: PAGE_QUALITY }),
+        cleanup: () => doc.cleanup(),
         destroy: () => doc.destroy(),
       };
     }
@@ -706,21 +772,23 @@ export default function Studio() {
         return;
       }
 
+      // ---- document record ---------------------------------------------------
+      // Created BEFORE the first page is rasterised, not after. Rendering a page is
+      // main-thread canvas work, and making the Firestore write queue behind it only
+      // gave the write more chances to time out for no benefit.
+      let createErr = null;
+      if (!id) {
+        const made = await createDocRecord({ name, total, eng });
+        id = made.id;
+        createErr = made.error;
+        setDocId(id);
+        if (!id) setError(describeSaveFailure(createErr, "create"));
+      }
+
       // ---- first page doubles as the on-screen preview -----------------------
       const firstPage = await src.get(0);
       if (!alive()) return;
       setThumb(await makeThumb(firstPage, 620, 0.72));
-
-      // ---- document record ---------------------------------------------------
-      if (!id) {
-        // A failed create used to leave id === null, which silently skipped every later
-        // save — the purest form of "my documents were never saved". Now it is reported.
-        const ref = await saveDocument(user.uid, { name, status: "processing", mode, engine: eng, pages: total })
-          .catch((e) => { console.error("[SlideBaba] could not create the document:", e); return null; });
-        id = ref?.id || null;
-        setDocId(id);
-        if (!id) setError("Heads up: this document could not be created in your account, so it won't appear in My Documents. Your scan will still run — download the result before leaving.");
-      }
 
       // ---- scan, one window of pages at a time -------------------------------
       setStatus("scanning");
@@ -781,6 +849,19 @@ export default function Studio() {
         // eslint-disable-next-line no-await-in-loop
         let imgs = await pending;
         if (!alive()) return;
+
+        // Drop pdf.js's DOCUMENT-level object cache while nothing is rendering.
+        //
+        // This is the fix for PowerPoint exports specifically. PowerPoint writes the
+        // /Resources dictionary onto the Pages tree NODE, so every page inherits an
+        // XObject dict listing EVERY image in the deck — a 55-slide export tells pdf.js
+        // that page 1 has 55 images, page 2 the same 55, and so on. Those decode into the
+        // SHARED object store, which page.cleanup() never touches, so they pile up: at
+        // 1706x960 RGB that is 4.7 MB each, ~258 MB for this one deck. That is the "55
+        // pages and it dies" case. Safe here and only here, because the previous window
+        // has finished rendering and the next has not started.
+        // eslint-disable-next-line no-await-in-loop
+        if (from > 0) await src.cleanup?.();
 
         // Kick off the next window's rendering before we start waiting on the network.
         const nextFrom = to;
@@ -859,24 +940,43 @@ export default function Studio() {
       // Count this successfully-processed document against the user's allowance.
       if (user) { const cr = await consume(user.uid, profile, "doc"); if (cr.ok) mergeProfile(cr.patch); }
 
-      if (failed.length) {
-        const shown = failed.slice(0, 12).sort((a, b) => a - b).join(", ");
-        setError(`Note: ${failed.length} page(s) couldn't be read clearly (page ${shown}${failed.length > 12 ? "…" : ""}). Everything else is here.`);
+      // LAST-CHANCE CREATE.
+      //
+      // If the record could not be created at the start, try once more now. Whatever was
+      // wrong then — a dropped connection, a cold Firestore channel — has had the whole
+      // scan to clear, and the alternative is throwing away work the user has just paid
+      // for and waited through. Only a permanent error (permission, quota) reaches here
+      // still broken, and that one keeps its real message.
+      if (user && !id) {
+        const retry = await createDocRecord({ name: title, total, eng });
+        if (retry.id) { id = retry.id; setDocId(id); createErr = null; }
+        else createErr = retry.error || createErr;
       }
 
       // AWAITED on purpose. This used to be fire-and-forget, which meant it was still
       // writing chunks when "Open as Slides" fired a second write into the same document.
       // Two interleaved chunk streams produced unparseable JSON and the document could
       // never be opened again. Awaiting also means a real failure is shown, not logged.
+      let saveErr = null;
       if (user && id) {
         try {
           await updateDocument(user.uid, id, { name: title, status: "generated", slides: sl, format: "slides" });
           savedRef.current = { docId: id, format: "slides" };
         } catch (e) {
-          console.error("[SlideBaba] could not store generated slides:", e);
-          setError(`Your slides were created but could not be saved: ${e?.message || e}. They are still open here — download them before leaving this page.`);
+          console.error("[SlideBaba] could not store generated slides:", e?.code || "", e?.message || e);
+          saveErr = e;
         }
       }
+
+      // One message, set once, after everything that could change it. Setting the
+      // page-read note first and then clearing it on a successful retry is how a real
+      // warning ("12 pages were unreadable") used to disappear.
+      const pageNote = failed.length
+        ? `Note: ${failed.length} page(s) couldn't be read clearly (page ${failed.slice(0, 12).sort((a, b) => a - b).join(", ")}${failed.length > 12 ? "…" : ""}). Everything else is here.`
+        : "";
+      if (saveErr) setError(describeSaveFailure(saveErr, "save"));
+      else if (user && !id) setError(describeSaveFailure(createErr, "create"));
+      else setError(pageNote);
     } catch (e) {
       if (!alive()) return;
       setError(e?.message || "Pipeline failed.");
@@ -931,9 +1031,9 @@ export default function Studio() {
       setPageCount(imgs.length);
       setThumb(await makeThumb(imgs[0], 620, 0.72));
 
-      const ref = await saveDocument(user.uid, { name: f.name, status: "processing", mode, engine })
-        .catch((e) => { console.error("[SlideBaba] could not create the document:", e); return null; });
-      setDocId(ref?.id || null);
+      const made = await createDocRecord({ name: f.name, total: imgs.length, eng: engine });
+      setDocId(made.id);
+      if (!made.id) setError(describeSaveFailure(made.error, "create"));
       setStatus("idle");
     } catch (e) {
       setError(`Couldn't read that file. Make sure it's a valid PDF or image. (${e?.message || "error"})`);
