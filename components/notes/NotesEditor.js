@@ -19,7 +19,7 @@ import { listGlobalBackgrounds } from "@/lib/admin";
 import { fileToDataUrl, downscaleDataUrl } from "@/lib/imageCrop";
 import { readBrand, writeBrand, prepareLogo } from "@/lib/brand";
 import {
-  DEFAULT_DESIGN, normalizeDesign, pageStyle, bodyStyle, pageCss,
+  DEFAULT_DESIGN, normalizeDesign, pageStyle, pageBgLayerStyle, bodyStyle, pageCss,
   PAGE_THEMES, PAGE_SIZES, MARGINS,
 } from "@/lib/notesDesign";
 import { useAutoSave } from "@/lib/useAutoSave";
@@ -328,6 +328,9 @@ export default function NotesEditor() {
         .notes-body .q-block{ break-inside:avoid; margin-bottom:22px; }
         .notes-body .q-head{ font-weight:800; color:#5b21b6; margin:0 0 6px; }
         .notes-body .q-body{ white-space:pre-wrap; line-height:1.7; color:#1e293b; }
+        /* Urdu glyphs fall back to Nastaliq (per-glyph); Latin/Devanagari keep their font. */
+        .notes-body, .notes-body .q-body, .notes-body .q-head{ font-family: inherit, 'Noto Nastaliq Urdu'; }
+        .notes-body [lang="ur"], .notes-body .urdu{ font-family:'Noto Nastaliq Urdu', serif; line-height:2.0; }
         .notes-body .mathpill{ display:inline-block; background:#eef1f7; border:1px solid #e1e6f0; border-radius:6px; padding:1px 6px; cursor:pointer; }
         .notes-body .mathpill:hover{ background:#e4e9fb; border-color:#c7d2fe; }
         .notes-body .mathpill .katex{ background:transparent; border:0; padding:0; }
@@ -515,9 +518,20 @@ export default function NotesEditor() {
                 </label>
                 <button onClick={() => bgInput.current?.click()} className="btn-ghost px-2 py-1.5 text-xs"><ImageIcon className="h-3.5 w-3.5" /> Image</button>
                 {(design.pageBg || design.pageBgImage) && (
-                  <button onClick={() => { setD({ pageBg: "", pageBgImage: "" }); scheduleSave(); }} className="text-xs text-slate-400 hover:text-white">reset</button>
+                  <button onClick={() => { setD({ pageBg: "", pageBgImage: "", bgOpacity: 1 }); scheduleSave(); }} className="text-xs text-slate-400 hover:text-white">reset</button>
                 )}
               </div>
+              {design.pageBgImage && (
+                <div className="mt-2.5 flex items-center gap-3">
+                  <span className="text-[11px] text-slate-400">Opacity</span>
+                  <input type="range" min="10" max="100" step="5"
+                    value={Math.round((design.bgOpacity ?? 1) * 100)}
+                    onChange={(e) => setD({ bgOpacity: Number(e.target.value) / 100 })}
+                    onMouseUp={scheduleSave} onTouchEnd={scheduleSave}
+                    className="h-1 flex-1 cursor-pointer accent-brand-500" />
+                  <span className="w-9 text-right text-[11px] tabular-nums text-slate-400">{Math.round((design.bgOpacity ?? 1) * 100)}%</span>
+                </div>
+              )}
               {(bgLib.length > 0 || sharedBg.length > 0) && (
                 <div className="mt-2 grid grid-cols-4 gap-1.5">
                   {[...bgLib, ...sharedBg].slice(0, 12).map((b) => (
@@ -584,8 +598,9 @@ export default function NotesEditor() {
       {/* A4 canvas */}
       <div className="flex-1 overflow-auto bg-slate-200/70 p-6 dark:bg-ink-950">
         <div id="notes-print" className="mx-auto w-fit">
-          <div className="notes-page mx-auto shadow-card" style={pageStyle(design)}>
-            <div className="flex items-center justify-between gap-4 bg-gradient-to-r from-[#1d1248] to-[#3a1f7a] px-6 py-4 text-white" style={{ background: hdBg || undefined, color: hdColor || undefined }}>
+          <div className="notes-page relative mx-auto overflow-hidden shadow-card" style={pageStyle(design)}>
+            {pageBgLayerStyle(design) && <div aria-hidden style={pageBgLayerStyle(design)} />}
+            <div className="relative z-10 flex items-center justify-between gap-4 bg-gradient-to-r from-[#1d1248] to-[#3a1f7a] px-6 py-4 text-white" style={{ background: hdBg || undefined, color: hdColor || undefined }}>
               {logo === "none" ? (
                 <div className="h-12 w-12 shrink-0" />
               ) : (
@@ -604,9 +619,9 @@ export default function NotesEditor() {
               <div className="h-12 w-12" />
             </div>
             <div ref={bodyRef} contentEditable suppressContentEditableWarning onInput={scheduleSave} onClick={onBodyClick}
-              className={`notes-body ${cols === 2 ? "cols2" : ""}`} style={bodyStyle(design)} />
+              className={`notes-body relative z-10 ${cols === 2 ? "cols2" : ""}`} style={bodyStyle(design)} />
             {design.footer && (
-              <div className="px-10 pb-6 pt-2 text-center text-[11px] opacity-70">
+              <div className="relative z-10 px-10 pb-6 pt-2 text-center text-[11px] opacity-70">
                 {design.footerText || hTitleRef.current?.innerText || ""}
               </div>
             )}

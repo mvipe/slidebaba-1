@@ -7,7 +7,7 @@ import {
   AlignStartVertical, AlignCenterVertical, AlignEndVertical,
   AlignStartHorizontal, AlignCenterHorizontal, AlignEndHorizontal,
   ArrowUpToLine, ArrowDownToLine, ArrowUp, ArrowDown,
-  Trash2, Undo2, Redo2, Type, Highlighter, ChevronDown, Move, LayoutGrid, Layers,
+  Trash2, Undo2, Redo2, Type, Highlighter, ChevronDown, Move, LayoutGrid, Layers, Droplet,
 } from "lucide-react";
 import { FONTS } from "@/lib/slideStore";
 import { listGlobalFonts, ensureFontLoaded } from "@/lib/admin";
@@ -154,6 +154,20 @@ export default function Toolbar({ el, onChange, onDelete, onUndo, onRedo, canUnd
         <Item onClick={() => pick(onAlign, "middle")}><AlignCenterHorizontal className="h-4 w-4" /> Middle (V)</Item>
         <Item onClick={() => pick(onAlign, "bottom")}><AlignEndHorizontal className="h-4 w-4" /> Bottom</Item>
       </Drop>
+
+      <Divider />
+      {/* Opacity — applies to ANY selected element (text, image, shape, table). Stored 0..1. */}
+      <div className={`flex h-8 shrink-0 items-center gap-2 rounded-md px-2.5 ring-1 ring-inset ring-white/10 ${el ? "" : "opacity-40"}`} title="Opacity">
+        <Droplet className="h-3.5 w-3.5 text-slate-300" />
+        <input
+          type="range" min="10" max="100" step="5"
+          value={Math.round((el?.opacity ?? 1) * 100)}
+          disabled={!el}
+          onChange={(e) => upd({ opacity: Number(e.target.value) / 100 })}
+          className="h-1 w-16 cursor-pointer accent-brand-500 disabled:cursor-not-allowed"
+        />
+        <span className="w-8 text-right text-[11px] tabular-nums text-slate-400">{Math.round((el?.opacity ?? 1) * 100)}%</span>
+      </div>
 
       <Divider />
       <Btn disabled={!el} title="Delete" onClick={onDelete}><Trash2 className="h-4 w-4 text-accent-400" /></Btn>

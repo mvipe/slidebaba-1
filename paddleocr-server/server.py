@@ -40,6 +40,8 @@ ENVIRONMENT
   PADDLE_PORT              default 8080
   PADDLE_LANG              default en            primary recognition script
   PADDLE_FALLBACK_LANG     default devanagari    second try when the first is poor
+  PADDLE_FALLBACK_LANGS    default devanagari,arabic   full fallback chain (Hindi/Marathi
+                                                 via devanagari, Urdu via arabic)
   PADDLE_FALLBACK_MIN_CONF default 0.80          below this, try the fallback script
   PADDLE_DEVICE            cpu | gpu             default cpu
   PADDLE_USE_FORMULA       1|0  default 1        formulas as LaTeX
@@ -100,6 +102,14 @@ HOST = _env("PADDLE_HOST", "127.0.0.1")
 PORT = int(_num("PADDLE_PORT", 8080))
 LANG = _env("PADDLE_LANG", "en")
 FALLBACK_LANG = _env("PADDLE_FALLBACK_LANG", "devanagari")
+# A CHAIN of fallback scripts, tried in order when the primary read is weak, best kept.
+#   devanagari -> Hindi, Marathi, Sanskrit, Nepali, Konkani (all share the script)
+#   arabic     -> Urdu, Arabic, Persian
+# So Urdu AND Marathi are covered out of the box. Override with PADDLE_FALLBACK_LANGS.
+_fallback_raw = _env("PADDLE_FALLBACK_LANGS", "") or FALLBACK_LANG
+FALLBACK_LANGS = [x.strip() for x in _fallback_raw.replace(";", ",").split(",") if x.strip()]
+if "arabic" not in FALLBACK_LANGS and not _env("PADDLE_FALLBACK_LANGS"):
+    FALLBACK_LANGS.append("arabic")   # add Urdu support by default
 FALLBACK_MIN_CONF = _num("PADDLE_FALLBACK_MIN_CONF", 0.80)
 DEVICE = _env("PADDLE_DEVICE", "cpu")
 USE_FORMULA = _flag("PADDLE_USE_FORMULA", True)
@@ -593,15 +603,25 @@ def layout_parsing(body: Dict[str, Any]) -> Dict[str, Any]:
             # difference between "Hindi papers work" and "Hindi papers are garbage",
             # and it costs nothing on the pages that read cleanly the first time.
             used_fallback = False
-            if FALLBACK_LANG and FALLBACK_LANG != LANG and (conf < FALLBACK_MIN_CONF or chars < 40):
-                log.info("primary read weak (conf=%.2f chars=%d) — retrying in %s", conf, chars, FALLBACK_LANG)
+            # Try each fallback script in turn while the best read so far still looks weak.
+            # Stops as soon as one reads convincingly, so a clean English/Hindi page never
+            # pays for the Urdu attempt.
+            for fb in FALLBACK_LANGS:
+                if fb == LANG:
+                    continue
+                if conf >= FALLBACK_MIN_CONF and chars >= 40:
+                    break
+                log.info("read weak (conf=%.2f chars=%d) — retrying in %s", conf, chars, fb)
                 try:
-                    secondary = (run_plain if degraded else run_pipeline)(FALLBACK_LANG, tmp.name)
-                    picked = better(primary, secondary)
-                    used_fallback = picked is secondary
-                    primary = picked
+                    secondary = (run_plain if degraded else run_pipeline)(fb, tmp.name)
                 except Exception as exc:  # noqa: BLE001
-                    log.warning("fallback script failed, keeping the primary read: %s", exc)
+                    log.warning("fallback script %s failed, keeping best so far: %s", fb, exc)
+                    continue
+                picked = better(primary, secondary)
+                if picked is secondary:
+                    used_fallback = True
+                    primary = secondary
+                    conf, chars = mean_confidence(primary)
 
         ms = int((time.time() - started) * 1000)
         _STATS["pages"] += 1

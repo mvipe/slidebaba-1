@@ -8,6 +8,10 @@ import { fmtDate } from "@/lib/usage";
 import { PLANS, PLAN_ORDER, RANK, remaining, cycleInfo, startCheckout, applyPlan } from "@/lib/plan";
 import { validateCoupon, discountLabel, applyDiscount } from "@/lib/coupons";
 
+// Price suffix shown next to a plan's amount. The two one-time promo plans get their own.
+const PERIOD_SUFFIX = { yearly: "/yr", monthly: "/mo", quarter: "/3 mo", triennial: "/3 yr" };
+const SPECIAL_IDS = ["quarter", "triennial"];
+
 function Bar({ used, limit }) {
   const pct = limit ? Math.min(100, Math.round((used / limit) * 100)) : 0;
   return (
@@ -56,11 +60,11 @@ export default function SubscriptionPage() {
   const per = yearly ? "/year" : "/month";
   const ids = yearly ? ["basic", "medium", "high"] : ["free", "basic", "medium", "high"];
 
-  const buy = (id) => {
+  const buy = (id, periodOverride) => {
     if (!user || id === "free") return;
     setMsg(null); setBusy(id);
     startCheckout({
-      plan: id, period: billing, profile, coupon, uid: user.uid,
+      plan: id, period: periodOverride || billing, profile, coupon, uid: user.uid,
       onSuccess: async (paidPlan, paidPeriod) => {
         try {
           const patch = await applyPlan(user.uid, paidPlan, paidPeriod);
@@ -97,7 +101,7 @@ export default function SubscriptionPage() {
               <h2 className="mt-3 font-display text-3xl font-extrabold capitalize text-white sm:text-4xl">{plan} <span className="text-base font-bold text-slate-500">· {period}</span></h2>
               <p className="mt-2 text-sm text-slate-400">Credits renew on <b className="text-slate-200">{fmtDate(renew)}</b> · {daysLeft} days left.</p>
             </div>
-            <p className="font-display text-3xl font-extrabold text-white">₹{PLANS[plan]?.[period === "yearly" ? "y" : "m"] ?? 0}<span className="text-base text-slate-500">{period === "yearly" ? "/yr" : "/mo"}</span></p>
+            <p className="font-display text-3xl font-extrabold text-white">₹{(PLANS[plan]?.[period === "yearly" ? "y" : "m"] ?? 0).toLocaleString("en-IN")}<span className="text-base text-slate-500">{PERIOD_SUFFIX[period] || "/mo"}</span></p>
           </div>
           <div className="mt-7 space-y-5">
             <div>
@@ -174,6 +178,65 @@ export default function SubscriptionPage() {
               </div>
             );
           })}
+        </div>
+
+        {/* special one-time plans — independent of the monthly/yearly toggle */}
+        <div className="mx-auto mt-10 max-w-6xl">
+          <div className="mb-4 flex items-center gap-3">
+            <h3 className="font-display text-lg font-extrabold text-white">Special long-term plans</h3>
+            <span className="rounded-full bg-amber-500/15 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-300">One-time payment</span>
+          </div>
+          <div className="grid gap-5 sm:grid-cols-2">
+            {SPECIAL_IDS.map((id) => {
+              const p = PLANS[id];
+              const isCurrent = plan === id;
+              const price = p.m; // one price, m === y
+              const finalPrice = Math.round(applyDiscount(price * 100, coupon) / 100);
+              const discounted = coupon && finalPrice < price;
+              const months = Math.round((p.durationDays || 0) / 30);
+              const validFor = id === "triennial" ? "3 years" : "3 months";
+              return (
+                <div key={id} className={`relative flex flex-col rounded-3xl bg-ink-850 p-5 ring-1 ${isCurrent ? "ring-2 ring-brand-400" : "ring-amber-500/30"} sm:p-6`}>
+                  <span className="absolute -top-3 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-gradient-to-r from-amber-500 to-orange-500 px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-white shadow-soft">★ Best deal · valid {validFor}</span>
+                  <div className="flex items-center gap-3">
+                    <span className="grid h-10 w-10 place-items-center rounded-xl bg-amber-500/15 text-amber-300"><Crown className="h-5 w-5" /></span>
+                    <h3 className="font-display text-lg font-bold text-white">{p.label} Plan</h3>
+                  </div>
+                  <p className="mt-3 font-display text-3xl font-extrabold text-white">
+                    {discounted && <span className="mr-1.5 align-middle text-lg font-bold text-slate-500 line-through">₹{price.toLocaleString("en-IN")}</span>}
+                    ₹{(discounted ? finalPrice : price).toLocaleString("en-IN")}
+                    <span className="text-sm text-slate-500"> one-time</span>
+                  </p>
+                  {discounted && <p className="text-xs font-bold text-emerald-400">{discountLabel(coupon)} with {coupon.code}</p>}
+                  <p className="mt-0.5 text-xs font-semibold text-amber-300/90">Pay once — full access for {validFor} ({months} months)</p>
+
+                  <ul className="mt-4 flex-1 space-y-2.5">
+                    <li className="flex items-start gap-2 text-sm text-slate-200"><Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" /> Up to <b className="text-brand-300">{p.maxSlidesPerDoc.m}</b> slides per document</li>
+                    <Feature ok>{p.credits.m.toLocaleString("en-IN")} AI Credits</Feature>
+                    <Feature ok>{p.docs.m.toLocaleString("en-IN")} Documents</Feature>
+                    <Feature ok={p.pdf}>PDF Export</Feature>
+                    <Feature ok={p.ppt}>PPT Export</Feature>
+                    <Feature ok={p.branding}>Custom Branding</Feature>
+                    <Feature ok={p.teaching}>Teaching Mode</Feature>
+                  </ul>
+
+                  <div className="mt-5 flex items-center gap-2 rounded-xl bg-ink-800/70 px-3 py-2.5 ring-1 ring-inset ring-white/10">
+                    <MonitorPlay className="h-4 w-4 text-brand-300" />
+                    <span className="text-xs text-slate-400">Create</span>
+                    <span className="text-sm font-bold text-white">{p.slides.m} Slides</span>
+                  </div>
+
+                  <button
+                    onClick={() => buy(id, id)}
+                    disabled={isCurrent || !!busy}
+                    className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 px-4 py-2.5 text-sm font-bold text-white transition disabled:opacity-50"
+                  >
+                    {busy === id ? <><Loader2 className="h-4 w-4 animate-spin" /> Opening…</> : isCurrent ? "Current plan" : <>Get {p.label} plan →</>}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
         </div>
 
         <p className="mt-5 text-center text-xs text-slate-500">Payments are processed securely by Razorpay. Use a test card in Razorpay test mode.</p>

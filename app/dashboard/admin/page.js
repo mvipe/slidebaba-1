@@ -20,6 +20,16 @@ const TABS = [
 ];
 const inr = (paise) => "₹" + Math.round((paise || 0) / 100).toLocaleString("en-IN");
 
+// A Firestore timestamp (or Date/number) -> milliseconds. Used by the filters below.
+function tsMs(ts) {
+  if (!ts) return 0;
+  if (typeof ts.toMillis === "function") return ts.toMillis();
+  if (typeof ts.toDate === "function") return ts.toDate().getTime();
+  if (typeof ts.seconds === "number") return ts.seconds * 1000;
+  const n = new Date(ts).getTime();
+  return Number.isFinite(n) ? n : 0;
+}
+
 export default function AdminPage() {
   const { user, profile } = useAuth();
   const router = useRouter();
@@ -69,16 +79,45 @@ export default function AdminPage() {
 /* ============ REVENUE ============ */
 function RevenueTab() {
   const [rows, setRows] = useState(null);
+  const [mode, setMode] = useState("all"); // all | normal | coupon
   useEffect(() => { listPayments().then(setRows); }, []);
   if (!rows) return <p className="py-10 text-center text-sm text-slate-500">Loading payments…</p>;
-  const sum = revenueSummary(rows);
+
+  // "coupon" = a coupon code was used on the order; "normal" = full-price, no coupon.
+  const withCoupon = rows.filter((p) => (p.coupon || "").trim());
+  const normal = rows.filter((p) => !(p.coupon || "").trim());
+  const view = mode === "coupon" ? withCoupon : mode === "normal" ? normal : rows;
+  const sum = revenueSummary(view);
+  const couponSum = revenueSummary(withCoupon);
+  const normalSum = revenueSummary(normal);
+
+  const FILTERS = [
+    { id: "all",    label: `All (${rows.length})` },
+    { id: "normal", label: `Normal (${normal.length})` },
+    { id: "coupon", label: `Coupon used (${withCoupon.length})` },
+  ];
 
   return (
     <div>
       <div className="grid gap-4 sm:grid-cols-3">
-        <Stat icon={IndianRupee} label="Total revenue" value={inr(sum.totalPaise)} tone="emerald" />
+        <Stat icon={IndianRupee} label={mode === "all" ? "Total revenue" : mode === "coupon" ? "Coupon revenue" : "Normal revenue"} value={inr(sum.totalPaise)} tone="emerald" />
         <Stat icon={Receipt} label="Payments" value={String(sum.count)} tone="sky" />
         <Stat icon={Tag} label="Avg. order" value={inr(sum.count ? sum.totalPaise / sum.count : 0)} tone="brand" />
+      </div>
+
+      {/* Normal vs coupon split — always visible so the breakdown is one glance away. */}
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <div className="flex items-center gap-1 rounded-xl bg-ink-850 p-1 ring-1 ring-inset ring-white/10">
+          {FILTERS.map((f) => (
+            <button key={f.id} onClick={() => setMode(f.id)}
+              className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${mode === f.id ? "bg-brand-gradient text-white" : "text-slate-400 hover:text-white"}`}>
+              {f.label}
+            </button>
+          ))}
+        </div>
+        <span className="text-xs text-slate-500">
+          Normal <b className="text-slate-300">{inr(normalSum.totalPaise)}</b> · Coupon <b className="text-slate-300">{inr(couponSum.totalPaise)}</b>
+        </span>
       </div>
 
       <div className="mt-6 overflow-x-auto rounded-2xl bg-ink-850 ring-1 ring-white/10">
@@ -90,8 +129,8 @@ function RevenueTab() {
             </tr>
           </thead>
           <tbody>
-            {rows.length === 0 && <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-500">No payments yet.</td></tr>}
-            {rows.map((p) => (
+            {view.length === 0 && <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-500">No payments in this filter.</td></tr>}
+            {view.map((p) => (
               <tr key={p.id} className="border-b border-white/5 text-slate-300">
                 <td className="px-4 py-3 text-slate-400">{fmtDate(p.createdAt?.toDate ? p.createdAt.toDate() : Date.now())}</td>
                 <td className="px-4 py-3 font-medium text-white">{p.phone || "—"}</td>
@@ -293,6 +332,8 @@ function FontsTab() {
 function UsersTab() {
   const [rows, setRows] = useState(null);
   const [q, setQ] = useState("");
+  const [from, setFrom] = useState(""); // yyyy-mm-dd — joined-on-or-after
+  const [to, setTo] = useState("");     // yyyy-mm-dd — joined-on-or-before
   const [busyId, setBusyId] = useState(null);
   const [err, setErr] = useState("");
 
@@ -326,17 +367,40 @@ function UsersTab() {
   };
 
   const meUid = auth.currentUser?.uid;
+  // Custom date range on the JOINED date (createdAt). `to` is inclusive of the whole day.
+  const fromMs = from ? new Date(`${from}T00:00:00`).getTime() : null;
+  const toMs = to ? new Date(`${to}T23:59:59.999`).getTime() : null;
   const list = (rows || []).filter((u) => {
-    if (!q.trim()) return true;
-    const t = q.toLowerCase();
-    return (u.fullName || "").toLowerCase().includes(t) || (u.phone || "").toLowerCase().includes(t) || (u.email || "").toLowerCase().includes(t);
+    const t = q.trim().toLowerCase();
+    if (t) {
+      const hit = (u.fullName || "").toLowerCase().includes(t) || (u.phone || "").toLowerCase().includes(t) || (u.email || "").toLowerCase().includes(t);
+      if (!hit) return false;
+    }
+    if (fromMs || toMs) {
+      const j = tsMs(u.createdAt);
+      if (fromMs && j < fromMs) return false;
+      if (toMs && j > toMs) return false;
+    }
+    return true;
   });
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name / phone / email" className="w-full max-w-xs rounded-lg bg-ink-800 px-3 py-2 text-sm text-white ring-1 ring-inset ring-white/10 sm:w-72" />
-        <p className="text-xs text-slate-500">{rows ? `${rows.length} user(s)` : "Loading…"}</p>
+        <p className="text-xs text-slate-500">{rows ? `${list.length} of ${rows.length} user(s)` : "Loading…"}</p>
+      </div>
+      {/* Custom joined-date range */}
+      <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+        <span className="font-semibold uppercase tracking-wide text-slate-500">Joined</span>
+        <input type="date" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)}
+          className="rounded-lg bg-ink-800 px-2.5 py-1.5 text-white ring-1 ring-inset ring-white/10" />
+        <span>to</span>
+        <input type="date" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)}
+          className="rounded-lg bg-ink-800 px-2.5 py-1.5 text-white ring-1 ring-inset ring-white/10" />
+        {(from || to) && (
+          <button onClick={() => { setFrom(""); setTo(""); }} className="text-slate-400 underline-offset-2 hover:text-white hover:underline">clear</button>
+        )}
       </div>
       {err && <p className="text-sm font-semibold text-accent-400">{err}</p>}
 

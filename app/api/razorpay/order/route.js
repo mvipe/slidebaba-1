@@ -8,6 +8,11 @@ const AMOUNTS = {
   yearly:  { basic: 999900, medium: 1999900, high: 2999900 },
 };
 
+// One-time promo plans: a single price regardless of the monthly/yearly toggle.
+//   quarter   ₹3,000  = 300000 paise (3 months)
+//   triennial ₹20,000 = 2000000 paise (3 years)
+const FLAT_AMOUNTS = { quarter: 300000, triennial: 2000000 };
+
 // Validate a coupon by reading the public `coupons/{CODE}` doc via Firestore REST,
 // then return the discounted amount (paise). Falls back to full price on any issue.
 async function discounted(amount, rawCode) {
@@ -49,7 +54,8 @@ export async function POST(request) {
   try { body = await request.json(); } catch { return NextResponse.json({ ok: false, error: "Invalid body." }, { status: 400 }); }
   const plan = body?.plan;
   const period = body?.period === "yearly" ? "yearly" : "monthly";
-  const base = AMOUNTS[period]?.[plan];
+  // Flat one-time plans win over the period table; everyone else is priced by period.
+  const base = FLAT_AMOUNTS[plan] ?? AMOUNTS[period]?.[plan];
   if (!base) return NextResponse.json({ ok: false, error: "Unknown plan." }, { status: 400 });
 
   const { amount, coupon } = await discounted(base, body?.couponCode);
