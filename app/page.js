@@ -70,6 +70,12 @@ const PLAN_DATA = {
   basic:  { name: "Basic",  m: "₹999",   y: "₹9,999",  slides: { m: "3,000",  y: "41,000" }, maxSlidesPerDoc: { m: 1200, y: 1200 }, pdf: true, ppt: true, branding: true, teaching: true, icon: Crown, ym: "≈ ₹833/mo", popular: true },
 };
 
+/* one-time long-term plans — shown under both toggles, as on the subscription page */
+const LONG_PLANS = [
+  { name: "3-Month", price: "₹3,000",  slides: "10,000",   maxSlidesPerDoc: 1800, validFor: "3 months", months: 3 },
+  { name: "3-Year",  price: "₹20,000", slides: "3,60,000", maxSlidesPerDoc: 2400, validFor: "3 years",  months: 36 },
+];
+
 const QUICK = [
   { icon: FileUp, tone: "flame", title: "Just upload a PDF or click a photo", text: "AI builds professional PPTs in seconds." },
   { icon: Zap, tone: "yellow", title: "No typing needed", text: "Let AI carry the workload." },
@@ -277,6 +283,17 @@ export default function LandingPage() {
               {["free", "basic"].map((id, i) => <PlanCard key={id} p={PLAN_DATA[id]} period="monthly" i={i} />)}
             </div>
           )}
+
+          {/* special one-time plans — independent of the monthly/yearly toggle */}
+          <div className="mx-auto mt-14 max-w-3xl">
+            <div className="mb-5 flex items-center gap-3">
+              <h3 className="font-display text-lg font-extrabold l-head">Special long-term plans</h3>
+              <span className="rounded-full bg-amber-500/15 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-600 dark:text-amber-300">One-time payment</span>
+            </div>
+            <div className="grid gap-6 sm:grid-cols-2">
+              {LONG_PLANS.map((p, i) => <LongPlanCard key={p.name} p={p} i={i} />)}
+            </div>
+          </div>
         </div>
       </section>
 
@@ -427,6 +444,48 @@ function PlanCard({ p, period, i }) {
 
       <Link href="/register" className={`mt-4 flex w-full items-center justify-center gap-2 rounded-xl py-3.5 text-base font-bold transition ${popular ? "bg-gradient-to-r from-emerald-500 to-cyan-500 text-white shadow-soft hover:-translate-y-0.5" : "bg-ink-800 text-white hover:bg-ink-700"}`}>
         Subscribe to {p.name} <ArrowRight className="h-5 w-5" />
+      </Link>
+    </motion.div>
+  );
+}
+
+function LongPlanCard({ p, i }) {
+  return (
+    <motion.div custom={i} variants={fade} initial="hidden" whileInView="show" viewport={vp}
+      className="relative flex flex-col rounded-3xl bg-white p-6 shadow-card ring-1 ring-amber-500/30 dark:bg-ink-850">
+      <span className="absolute -top-3 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-gradient-to-r from-amber-500 to-orange-500 px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-white shadow-soft">★ Best deal · valid {p.validFor}</span>
+      <div className="flex items-center gap-3">
+        <span className="grid h-12 w-12 place-items-center rounded-2xl bg-amber-500/15 text-amber-500 ring-1 ring-inset ring-amber-500/30 dark:text-amber-300"><Crown className="h-6 w-6" /></span>
+        <h3 className="font-display text-lg font-bold l-head">{p.name} Plan</h3>
+      </div>
+      <p className="mt-4 font-display text-4xl font-extrabold l-head">{p.price}<span className="text-sm l-muted"> one-time</span></p>
+      <p className="mt-0.5 text-xs font-semibold text-amber-600 dark:text-amber-300/90">Pay once — full access for {p.validFor} ({p.months} months)</p>
+
+      <ul className="mt-4 flex-1 space-y-3 text-sm">
+        <li className="flex items-start gap-2 l-muted">
+          <Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />
+          <span>Up to <b className="text-brand-500 dark:text-brand-300">{p.maxSlidesPerDoc}</b> slides per document</span>
+        </li>
+        <Feat ok>Unlimited downloads</Feat>
+        <Feat ok>PDF Export</Feat>
+        <Feat ok>PPT Export</Feat>
+        <Feat ok>Custom Branding</Feat>
+        <Feat ok>Teaching Mode</Feat>
+      </ul>
+
+      <div className="mt-5 flex items-center gap-3 rounded-2xl border-2 border-dashed border-amber-400/40 bg-amber-500/5 p-4">
+        <MonitorPlay className="h-8 w-8 shrink-0 text-amber-500" />
+        <div className="min-w-0 leading-tight">
+          <p className="text-xs font-medium l-muted">Create</p>
+          <p className="font-display text-2xl font-extrabold l-head">
+            <span className="text-amber-500">{p.slides}</span>
+            <span className="ml-1.5 text-base font-semibold l-muted">Slides for {p.validFor}</span>
+          </p>
+        </div>
+      </div>
+
+      <Link href="/register" className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 py-3.5 text-base font-bold text-white shadow-soft transition hover:-translate-y-0.5">
+        Get {p.name} plan <ArrowRight className="h-5 w-5" />
       </Link>
     </motion.div>
   );
