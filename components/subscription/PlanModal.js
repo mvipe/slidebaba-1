@@ -2,14 +2,12 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { X, Check, Rocket, Crown, ArrowRight, Loader2, Tag, Lock } from "lucide-react";
+import { X, Check, Rocket, ArrowRight, Loader2, Tag, Lock } from "lucide-react";
 import { PLANS, applyPlan, startCheckout } from "@/lib/plan";
 import { validateCoupon, applyDiscount, discountLabel } from "@/lib/coupons";
 
 const ITEMS = [
-  { id: "basic", icon: Rocket },
-  { id: "medium", icon: Rocket },
-  { id: "high", icon: Crown, popular: true },
+  { id: "basic", icon: Rocket, popular: true },
 ];
 
 const fmt = (paise) => "₹" + Math.round(paise / 100).toLocaleString("en-IN");
@@ -66,7 +64,7 @@ export default function PlanModal({ open, onClose, profile, uid, onApplied, peri
         </div>
         {couponMsg && <p className={`mt-1.5 text-xs font-semibold ${coupon ? "text-emerald-500" : "text-accent-500"}`}>{couponMsg}</p>}
 
-        <div className="mt-5 grid gap-4 sm:grid-cols-3">
+        <div className="mx-auto mt-5 grid max-w-sm gap-4">
           {ITEMS.map(({ id, icon: Icon, popular }) => {
             const plan = PLANS[id];
             const base = (plan[k] || 0) * 100; // paise
@@ -86,8 +84,8 @@ export default function PlanModal({ open, onClose, profile, uid, onApplied, peri
                 </div>
                 <ul className="mt-3 flex-1 space-y-1.5 text-xs text-slate-500">
                   <li className="flex items-center gap-1.5"><Check className="h-3.5 w-3.5 text-emerald-500" /> Up to {plan.maxSlidesPerDoc[k]} slides per document</li>
-                  <li className="flex items-center gap-1.5"><Check className="h-3.5 w-3.5 text-emerald-500" /> {plan.credits[k]} AI credits</li>
-                  <li className="flex items-center gap-1.5"><Check className="h-3.5 w-3.5 text-emerald-500" /> {plan.docs[k]} documents</li>
+                  <li className="flex items-center gap-1.5"><Check className="h-3.5 w-3.5 text-emerald-500" /> {plan.slides[k].toLocaleString("en-IN")} slides/{period === "yearly" ? "year" : "month"}</li>
+                  <li className="flex items-center gap-1.5"><Check className="h-3.5 w-3.5 text-emerald-500" /> Unlimited downloads</li>
                   <li className="flex items-center gap-1.5"><Check className="h-3.5 w-3.5 text-emerald-500" /> {plan.ppt ? "PPT + PDF" : "PDF export"}</li>
                 </ul>
                 <button onClick={() => buy(id)} disabled={!!busy} className={`mt-4 flex w-full items-center justify-center gap-1.5 rounded-xl py-2.5 text-sm font-bold transition disabled:opacity-60 ${popular ? "bg-gradient-to-r from-emerald-500 to-cyan-500 text-white" : "bg-ink-900 text-white hover:bg-ink-800 dark:bg-ink-700 dark:hover:bg-ink-600"}`}>

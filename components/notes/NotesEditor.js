@@ -12,7 +12,6 @@ import {
 import { renderMixedAnnotated } from "@/components/Katex";
 import { readHandoff, clearHandoff } from "@/lib/slideStore";
 import { latexToUnicode } from "@/lib/mathText";
-import { consume, remaining } from "@/lib/plan";
 import { useAuth } from "@/context/AuthContext";
 import { saveDownload, listBackgrounds, saveBackground } from "@/lib/docs";
 import { listGlobalBackgrounds } from "@/lib/admin";
@@ -262,25 +261,16 @@ export default function NotesEditor() {
   const deleteMath = () => { mathEdit?.node?.remove(); setMathEdit(null); scheduleSave(); };
 
   /* -------- exports -------- */
-  /* The allowance is now checked locally (instant, no network) and the usage is recorded
-     AFTER the file has been produced. Previously a slow or stuck Firestore write blocked
-     the export entirely and the button appeared to do nothing. */
-  const checkAllowance = () => {
-    if (!user || !profile) return true;
-    if (remaining(profile).docsLeft > 0) return true;
-    alert("You've used all your document credits for this cycle. Upgrade your plan for more.");
-    router.push("/dashboard/subscription");
-    return false;
-  };
+  /* Downloads are unlimited on every plan, so nothing is checked or spent here; the
+     download is only recorded, AFTER the file has been produced, so a slow Firestore write
+     can never block the export. */
   const recordUse = (name, format) => {
     if (!user) return;
-    consume(user.uid, profile, "doc").then((cr) => { if (cr?.ok) mergeProfile(cr.patch); }).catch(() => {});
     saveDownload(user.uid, { name, format, kind: "notes" }).catch(() => {});
   };
 
   const exportPdf = async () => {
     setDlOpen(false); setMathEdit(null);
-    if (!checkAllowance()) return;
     if (user && saver.isDirty()) saver.saveNow().catch(() => {});
     setTimeout(() => {
       window.print();
@@ -289,7 +279,6 @@ export default function NotesEditor() {
   };
   const exportDocx = async () => {
     setDlOpen(false);
-    if (!checkAllowance()) return;
     if (user && saver.isDirty()) saver.saveNow().catch(() => {});
     setExporting(true);
     try {

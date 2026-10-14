@@ -11,6 +11,8 @@ import { validateCoupon, discountLabel, applyDiscount } from "@/lib/coupons";
 // Price suffix shown next to a plan's amount. The two one-time promo plans get their own.
 const PERIOD_SUFFIX = { yearly: "/yr", monthly: "/mo", quarter: "/3 mo", triennial: "/3 yr" };
 const SPECIAL_IDS = ["quarter", "triennial"];
+// Slide count SHOWN on a card, where it differs from the real allowance in PLANS (display only).
+const SHOWN_SLIDES = { basic: { y: 41000 } };
 
 function Bar({ used, limit }) {
   const pct = limit ? Math.min(100, Math.round((used / limit) * 100)) : 0;
@@ -34,9 +36,7 @@ export default function SubscriptionPage() {
   const { user, profile, mergeProfile } = useAuth();
   const plan = profile?.plan || "free";
   const period = profile?.period || "monthly";
-  const { docsLimit, snipsLimit } = remaining(profile);
-  const docsUsed = profile?.docsUsed ?? 0;
-  const snipsUsed = profile?.snipsUsed ?? 0;
+  const { slidesLimit, slidesUsed, slidesLeft } = remaining(profile);
   const { renew, daysLeft } = cycleInfo(profile);
   // Set when a paid plan expired and was downgraded to Free — prompt the user to pay again.
   const expiredFrom = plan === "free" && profile?.prevPlan && profile.prevPlan !== "free" ? profile.prevPlan : null;
@@ -58,7 +58,7 @@ export default function SubscriptionPage() {
   const yearly = billing === "yearly";
   const k = yearly ? "y" : "m";
   const per = yearly ? "/year" : "/month";
-  const ids = yearly ? ["basic", "medium", "high"] : ["free", "basic", "medium", "high"];
+  const ids = yearly ? ["basic"] : ["free", "basic"];
 
   const buy = (id, periodOverride) => {
     if (!user || id === "free") return;
@@ -89,7 +89,7 @@ export default function SubscriptionPage() {
 
         {expiredFrom && (
           <div className="mb-5 flex items-center gap-2 rounded-xl bg-amber-500/15 px-4 py-3 text-sm text-amber-300 ring-1 ring-inset ring-amber-500/30">
-            <AlertCircle className="h-4 w-4 shrink-0" /> Your <b className="capitalize">{PLANS[expiredFrom]?.label || expiredFrom}</b> plan has ended. Choose a plan below to renew and restore your credits.
+            <AlertCircle className="h-4 w-4 shrink-0" /> Your <b className="capitalize">{PLANS[expiredFrom]?.label || expiredFrom}</b> plan has ended. Choose a plan below to renew and restore your slides.
           </div>
         )}
 
@@ -99,19 +99,16 @@ export default function SubscriptionPage() {
             <div>
               <span className="rounded-full bg-sky-500/15 px-3 py-1 text-xs font-bold uppercase tracking-wider text-sky-300">Current Plan</span>
               <h2 className="mt-3 font-display text-3xl font-extrabold capitalize text-white sm:text-4xl">{plan} <span className="text-base font-bold text-slate-500">· {period}</span></h2>
-              <p className="mt-2 text-sm text-slate-400">Credits renew on <b className="text-slate-200">{fmtDate(renew)}</b> · {daysLeft} days left.</p>
+              <p className="mt-2 text-sm text-slate-400">Slides renew on <b className="text-slate-200">{fmtDate(renew)}</b> · {daysLeft} days left.</p>
             </div>
             <p className="font-display text-3xl font-extrabold text-white">₹{(PLANS[plan]?.[period === "yearly" ? "y" : "m"] ?? 0).toLocaleString("en-IN")}<span className="text-base text-slate-500">{PERIOD_SUFFIX[period] || "/mo"}</span></p>
           </div>
           <div className="mt-7 space-y-5">
             <div>
-              <div className="flex items-center justify-between text-sm font-semibold"><span className="text-slate-300">Document Credits</span><span className="text-brand-300">{Math.max(0, docsLimit - docsUsed)} / {docsLimit} left</span></div>
-              <Bar used={docsUsed} limit={docsLimit} />
+              <div className="flex items-center justify-between text-sm font-semibold"><span className="text-slate-300">Slides</span><span className="text-brand-300">{slidesLeft.toLocaleString("en-IN")} / {slidesLimit.toLocaleString("en-IN")} left</span></div>
+              <Bar used={slidesUsed} limit={slidesLimit} />
             </div>
-            <div>
-              <div className="flex items-center justify-between text-sm font-semibold"><span className="text-slate-300">AI Credits</span><span className="text-sky-300">{Math.max(0, snipsLimit - snipsUsed)} / {snipsLimit} left</span></div>
-              <Bar used={snipsUsed} limit={snipsLimit} />
-            </div>
+            <p className="flex items-center gap-1.5 text-sm font-semibold text-emerald-400"><Check className="h-4 w-4" /> Downloads are unlimited — PDF, PPT and notes never use slides.</p>
           </div>
         </div>
 
@@ -134,7 +131,7 @@ export default function SubscriptionPage() {
         {couponMsg && <p className={`mx-auto mt-1.5 max-w-md text-center text-xs font-semibold ${coupon ? "text-emerald-400" : "text-accent-400"}`}>{couponMsg}</p>}
 
         {/* plan cards */}
-        <div className={`mx-auto mt-6 grid max-w-6xl gap-5 sm:grid-cols-2 lg:grid-cols-3`}>
+        <div className={`mx-auto mt-6 grid gap-5 ${yearly ? "max-w-md" : "max-w-3xl sm:grid-cols-2"}`}>
           {ids.map((id) => {
             const p = PLANS[id];
             const isCurrent = plan === id && period === billing;
@@ -154,8 +151,7 @@ export default function SubscriptionPage() {
 
                 <ul className="mt-4 flex-1 space-y-2.5">
                   <li className="flex items-start gap-2 text-sm text-slate-200"><Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" /> Up to <b className="text-brand-300">{p.maxSlidesPerDoc[k]}</b> slides per document</li>
-                  <Feature ok>{p.credits[k].toLocaleString("en-IN")} AI Credits</Feature>
-                  <Feature ok>{p.docs[k].toLocaleString("en-IN")} Documents/{yearly ? "year" : "month"}</Feature>
+                  <Feature ok>Unlimited downloads</Feature>
                   <Feature ok={p.pdf}>PDF Export</Feature>
                   <Feature ok={p.ppt}>PPT Export</Feature>
                   <Feature ok={p.branding}>Custom Branding</Feature>
@@ -165,7 +161,8 @@ export default function SubscriptionPage() {
                 <div className="mt-5 flex items-center gap-2 rounded-xl bg-ink-800/70 px-3 py-2.5 ring-1 ring-inset ring-white/10">
                   <MonitorPlay className="h-4 w-4 text-brand-300" />
                   <span className="text-xs text-slate-400">Create</span>
-                  <span className="text-sm font-bold text-white">{p.slides[k]} Slides</span>
+                  <span className="text-sm font-bold text-white">{(SHOWN_SLIDES[id]?.[k] ?? p.slides[k]).toLocaleString("en-IN")} Slides</span>
+                  <span className="text-xs text-slate-400">{per}</span>
                 </div>
 
                 <button
@@ -212,8 +209,7 @@ export default function SubscriptionPage() {
 
                   <ul className="mt-4 flex-1 space-y-2.5">
                     <li className="flex items-start gap-2 text-sm text-slate-200"><Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" /> Up to <b className="text-brand-300">{p.maxSlidesPerDoc.m}</b> slides per document</li>
-                    <Feature ok>{p.credits.m.toLocaleString("en-IN")} AI Credits</Feature>
-                    <Feature ok>{p.docs.m.toLocaleString("en-IN")} Documents</Feature>
+                    <Feature ok>Unlimited downloads</Feature>
                     <Feature ok={p.pdf}>PDF Export</Feature>
                     <Feature ok={p.ppt}>PPT Export</Feature>
                     <Feature ok={p.branding}>Custom Branding</Feature>
@@ -223,7 +219,8 @@ export default function SubscriptionPage() {
                   <div className="mt-5 flex items-center gap-2 rounded-xl bg-ink-800/70 px-3 py-2.5 ring-1 ring-inset ring-white/10">
                     <MonitorPlay className="h-4 w-4 text-brand-300" />
                     <span className="text-xs text-slate-400">Create</span>
-                    <span className="text-sm font-bold text-white">{p.slides.m} Slides</span>
+                    <span className="text-sm font-bold text-white">{p.slides.m.toLocaleString("en-IN")} Slides</span>
+                    <span className="text-xs text-slate-400">for {validFor}</span>
                   </div>
 
                   <button

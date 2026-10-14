@@ -239,10 +239,6 @@ function mergeSectionSets(base, extra) {
  *   sizes        upload size per attempt; a slice is already at the right size, so the
  *                first entry must be large enough not to shrink it back down.
  * ------------------------------------------------------------------------ */
-// v2: the v1 key was populated by the old Model 2 default rather than by a real choice,
-// so it must not be honoured — otherwise everyone who ever opened the Studio stays on
-// Model 2 even though the default is now Model 1.
-const ENGINE_STORAGE_KEY = "slidebaba.ocrEngine.v2";
 
 const ENGINE_META = {
   openai: {
@@ -422,8 +418,7 @@ export default function Studio() {
   const [error, setError] = useState("");
   const [prog, setProg] = useState(null);         // { done, total, etaSec }
 
-  // Which OCR engine this scan uses. Remembered per browser so a user who prefers
-  // one does not have to re-pick it on every visit.
+  // Which OCR engine this scan uses. Always Model 1 when the page opens.
   const [engine, setEngine] = useState(FALLBACK_ENGINE);
   const [engineInfo, setEngineInfo] = useState(null); // { default, engines:[{id,label,configured,free}] }
   const [notesBusy, setNotesBusy] = useState(false);
@@ -456,14 +451,11 @@ export default function Studio() {
     try { window.localStorage.setItem(ACCURACY_STORAGE_KEY, id); } catch {}
   };
 
-  // Restore the saved choice, then ask the server which engines are actually
-  // configured. A stored engine that the server cannot run is dropped rather than
-  // left to fail on the first page.
+  // Every visit starts on Model 1 — a choice of Model 2 lasts for that visit only. Then
+  // ask the server which engines are actually configured, and fall back to the first
+  // one that is if Model 1 cannot run, rather than letting it fail on the first page.
   useEffect(() => {
     let alive = true;
-    let saved = "";
-    try { saved = window.localStorage.getItem(ENGINE_STORAGE_KEY) || ""; } catch {}
-    if (saved && ENGINE_ORDER.includes(saved)) setEngine(saved);
 
     (async () => {
       try {
@@ -474,8 +466,7 @@ export default function Studio() {
         setEngineInfo(data);
         const ready = data.engines.filter((e) => e.configured).map((e) => e.id);
         if (!ready.length) return;
-        const wanted = saved && ENGINE_ORDER.includes(saved) ? saved : data.default;
-        setEngine(ready.includes(wanted) ? wanted : ready[0]);
+        setEngine(ready.includes(FALLBACK_ENGINE) ? FALLBACK_ENGINE : ready[0]);
       } catch { /* health check is advisory — the toggle still works without it */ }
     })();
 
@@ -495,7 +486,7 @@ export default function Studio() {
     return () => clearInterval(t);
   }, [status]);
 
-  // A long scan that the user navigates away from is a wasted document credit.
+  // A long scan that the user navigates away from is wasted work.
   useEffect(() => {
     if (status !== "scanning" && status !== "loading") return undefined;
     const warn = (e) => { e.preventDefault(); e.returnValue = ""; return ""; };
@@ -533,10 +524,7 @@ export default function Studio() {
     return () => { alive = false; clearInterval(t); };
   }, [status, engine]);
 
-  const pickEngine = (id) => {
-    setEngine(id);
-    try { window.localStorage.setItem(ENGINE_STORAGE_KEY, id); } catch {}
-  };
+  const pickEngine = (id) => setEngine(id);
 
   const engineReady = (id) => {
     const found = engineInfo?.engines?.find((e) => e.id === id);
@@ -925,20 +913,23 @@ export default function Studio() {
       const its = chunkResults.flat();
       if (!its.length) throw new Error(analyzeErr ? `Couldn't structure the content: ${analyzeErr}` : "Couldn't structure the content. Please try again.");
 
+      const sl = await buildFittedSlides(its);
+      if (!alive()) return;
+
       // ---- slide-count gate --------------------------------------------------
-      const slideGate = checkDocumentLimits(profile, { slides: its.length });
+      // Checked on the FINAL slides (a long question can split over several), since that
+      // is exactly what gets charged: per-document cap and the slides left this cycle.
+      const slideGate = checkDocumentLimits(profile, { slides: sl.length });
       if (!slideGate.ok) {
         setLimitBlock({ ...slideGate, pages: total });
         setStatus("idle");
         return;
       }
 
-      const sl = await buildFittedSlides(its);
-      if (!alive()) return;
       setItems(its); setSlides(sl); setStatus("preview");
 
-      // Count this successfully-processed document against the user's allowance.
-      if (user) { const cr = await consume(user.uid, profile, "doc"); if (cr.ok) mergeProfile(cr.patch); }
+      // Spend one slide per slide this document produced.
+      if (user) { const cr = await consume(user.uid, profile, sl.length); if (cr.ok) mergeProfile(cr.patch); }
 
       // LAST-CHANCE CREATE.
       //
@@ -1064,21 +1055,21 @@ export default function Studio() {
         return { title: `Snippet ${i + 1}`, text: text || ocr.title || "" };
       });
 
-      const slideGate = checkDocumentLimits(profile, { slides: its.length });
+      const sl = await buildFittedSlides(its);
+      const slideGate = checkDocumentLimits(profile, { slides: sl.length });
       if (!slideGate.ok) { setLimitBlock(slideGate); setStatus("idle"); return; }
 
       if (user) {
-        const cr = await consume(user.uid, profile, "snip");
+        const cr = await consume(user.uid, profile, sl.length);
         if (!cr.ok) {
-          if (cr.reason === "limit") setLimitBlock({ ok: false, kind: "credits", planLabel: PLANS[profile?.plan || "free"].label, message: "You have used all the AI credits on your plan for this cycle." });
-          else setError("Couldn't update your credits — try again.");
+          if (cr.reason === "limit") setLimitBlock({ ok: false, kind: "credits", planLabel: PLANS[profile?.plan || "free"].label, message: `These snippets need ${sl.length} slides but you don't have that many slides left this cycle.` });
+          else setError("Couldn't update your slide balance — try again.");
           setStatus("idle");
           return;
         }
         mergeProfile(cr.patch);
       }
 
-      const sl = await buildFittedSlides(its);
       setItems(its); setSlides(sl); setStatus("preview");
       if (user && docId) updateDocument(user.uid, docId, { status: "generated", slides: sl, format: "slides" }).catch((e) => console.error("[SlideBaba] could not store generated slides:", e));
     } catch (e) {
@@ -1417,13 +1408,13 @@ export default function Studio() {
             <h3 className="mt-4 font-display text-xl font-extrabold text-white">
               {limitBlock.kind === "pages" ? "PDF is above your page limit"
                 : limitBlock.kind === "slides" ? "Document is above your slide limit"
-                : "You're out of documents"}
+                : "Not enough slides left"}
             </h3>
             <p className="mt-2 text-sm text-slate-400">{limitBlock.message}</p>
             <p className="mt-1 text-xs text-slate-500">
               {limitBlock.kind === "credits"
-                ? "Upgrade or wait for your next cycle to continue."
-                : "Nothing was scanned and no credits were used. Upgrade for a higher limit, or split the file and try again."}
+                ? "No slides were used. Upgrade or wait for your next cycle to continue."
+                : "Nothing was scanned and no slides were used. Upgrade for a higher limit, or split the file and try again."}
             </p>
             <div className="mt-5 flex flex-col gap-2 sm:flex-row">
               <button onClick={() => { setLimitBlock(null); setPayOpen(true); }} className="flex-1 rounded-xl bg-brand-gradient px-4 py-2.5 text-sm font-bold text-white hover:brightness-110">Upgrade plan</button>

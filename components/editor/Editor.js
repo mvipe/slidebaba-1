@@ -19,7 +19,7 @@ import {
 import { useAutoSave } from "@/lib/useAutoSave";
 import { readLocalDraft, clearLocalDraft, localKey } from "@/lib/docStore";
 import { listGlobalBackgrounds } from "@/lib/admin";
-import { consume, saveBrand, remaining } from "@/lib/plan";
+import { saveBrand } from "@/lib/plan";
 import { downscaleDataUrl, fileToDataUrl, imageSize } from "@/lib/imageCrop";
 import { exportSlidesPptx, exportSlidesPdf } from "@/lib/slideExport";
 import ThemeToggleButton from "@/components/ThemeToggleButton";
@@ -476,22 +476,14 @@ export default function Editor() {
      Firestore queue that call never resolved, so pressing Download simply did nothing. It
      also burned a credit even when the export then failed.
 
-     Now: the allowance is checked locally (no network), the file is produced first, and the
-     usage record is written afterwards in the background. Nothing about the download can
-     hang on the network any more, and every failure is reported. */
+     Now: downloads are unlimited on every plan (slides are paid for when they are created),
+     the file is produced first, and the download record is written afterwards in the
+     background. Nothing about the download can hang on the network, and every failure is
+     reported. */
   const downloadAs = async (kind) => {
     setDlOpen(false);
     if (exporting) return;
     if (!slides.length) { alert("There's nothing to export yet."); return; }
-
-    if (user && profile) {
-      const left = remaining(profile).docsLeft;
-      if (left <= 0) {
-        alert("You've used all your document credits for this cycle. Upgrade your plan for more.");
-        router.push("/dashboard/subscription");
-        return;
-      }
-    }
 
     // Get the work safely stored before a long export, but never block the export on it.
     if (user && saver.isDirty()) saver.saveNow().catch(() => {});
@@ -507,7 +499,6 @@ export default function Editor() {
 
       // Bookkeeping happens after the file exists, and can never break the download.
       if (user) {
-        consume(user.uid, profile, "doc").then((cr) => { if (cr?.ok) mergeProfile(cr.patch); }).catch(() => {});
         saveDownload(user.uid, {
           name: `${name}.${kind === "pdf" ? "pdf" : "pptx"}`,
           format: kind === "pdf" ? "pdf" : "pptx",

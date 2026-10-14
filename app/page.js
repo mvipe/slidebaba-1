@@ -65,10 +65,9 @@ const STEPS = [
 
 /* period-aware plan data (m = monthly, y = yearly) */
 const PLAN_DATA = {
-  free:   { name: "Free",   m: "₹0",     y: "₹0",      credits: { m: "5",   y: "5" },     docs: { m: "2",   y: "2" },     slides: { m: "3,000+",  y: "3,000+" },    maxSlidesPerDoc: { m: 25, y: 25 }, pdf: true, ppt: true,  branding: true, teaching: false, icon: Rocket },
-  basic:  { name: "Basic",  m: "₹999",   y: "₹9,999",  credits: { m: "150", y: "2,400" }, docs: { m: "150", y: "2,400" }, slides: { m: "3,000+",  y: "36,000+" },   maxSlidesPerDoc: { m: 100, y: 100 }, pdf: true, ppt: false, branding: true, teaching: false, icon: Rocket, ym: "≈ ₹833/mo" },
-  medium: { name: "Medium", m: "₹1,999", y: "₹19,990", credits: { m: "400", y: "5,400" }, docs: { m: "400", y: "5,400" }, slides: { m: "8,000+",  y: "96,000+" },   maxSlidesPerDoc: { m: 150, y: 150 }, pdf: true, ppt: true,  branding: true, teaching: false, icon: Rocket, ym: "≈ ₹1,666/mo" },
-  high:   { name: "High",   m: "₹2,999", y: "₹29,990", credits: { m: "749", y: "9,600" }, docs: { m: "749", y: "9,600" }, slides: { m: "15,000+", y: "1,80,000+" }, maxSlidesPerDoc: { m: 200, y: 200 }, pdf: true, ppt: true,  branding: true, teaching: true,  icon: Crown,  ym: "≈ ₹2,499/mo", popular: true },
+  // Keep in step with PLANS in lib/plan.js.
+  free:   { name: "Free",   m: "₹0",     y: "₹0",      slides: { m: "50",     y: "50" },     maxSlidesPerDoc: { m: 150,  y: 150 },  pdf: true, ppt: true, branding: true, teaching: true, icon: Rocket },
+  basic:  { name: "Basic",  m: "₹999",   y: "₹9,999",  slides: { m: "3,000",  y: "41,000" }, maxSlidesPerDoc: { m: 1200, y: 1200 }, pdf: true, ppt: true, branding: true, teaching: true, icon: Crown, ym: "≈ ₹833/mo", popular: true },
 };
 
 const QUICK = [
@@ -82,7 +81,7 @@ const FAQS = [
   { q: "What file types can I upload?", a: "PDFs, JPGs and PNGs — including photos of handwritten notes and printed question papers." },
   { q: "Does it handle math and equations?", a: "Yes. SlideBaba reads complex math with Vision OCR and rebuilds it as editable LaTeX/Unicode in your slides and notes." },
   { q: "Can I edit the output?", a: "Absolutely. Everything opens in an editor where you can change text, fonts, colours, backgrounds, formulas and your branding." },
-  { q: "Is there a free plan?", a: "Yes — the Free plan gives you 2 documents and 5 AI credits every month, with no credit card required." },
+  { q: "Is there a free plan?", a: "Yes — the Free plan gives you 50 slides every month and unlimited downloads, with no credit card required." },
 ];
 
 const LATEX = "$$ \\int_{a}^{b} x^2\\,dx = \\frac{b^3 - a^3}{3} $$";
@@ -270,18 +269,13 @@ export default function LandingPage() {
           </div>
 
           {yearly ? (
-            <div className="mx-auto mt-10 grid max-w-5xl gap-6 lg:grid-cols-3">
-              {["basic", "medium", "high"].map((id, i) => <PlanCard key={id} p={PLAN_DATA[id]} period="yearly" i={i} />)}
+            <div className="mx-auto mt-10 max-w-md">
+              <PlanCard p={PLAN_DATA.basic} period="yearly" i={0} />
             </div>
           ) : (
-            <>
-              <div className="mx-auto mt-10 grid max-w-5xl gap-6 lg:grid-cols-3">
-                {["free", "basic", "medium"].map((id, i) => <PlanCard key={id} p={PLAN_DATA[id]} period="monthly" i={i} />)}
-              </div>
-              <div className="mx-auto mt-6 max-w-md">
-                <PlanCard p={PLAN_DATA.high} period="monthly" i={0} />
-              </div>
-            </>
+            <div className="mx-auto mt-10 grid max-w-3xl gap-6 sm:grid-cols-2">
+              {["free", "basic"].map((id, i) => <PlanCard key={id} p={PLAN_DATA[id]} period="monthly" i={i} />)}
+            </div>
           )}
         </div>
       </section>
@@ -397,7 +391,6 @@ function PlanCard({ p, period, i }) {
   const k = yearly ? "y" : "m";
   const price = p[k];
   const per = yearly ? "/year" : "/month";
-  const docsLabel = yearly ? "Documents/year" : "Documents/month";
   const badge = popular ? (yearly ? "Best Value" : "Most Popular") : null;
 
   return (
@@ -414,8 +407,7 @@ function PlanCard({ p, period, i }) {
           <Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />
           <span>Up to <b className={popular ? "text-emerald-500 dark:text-emerald-400" : "text-brand-500 dark:text-brand-300"}>{p.maxSlidesPerDoc[k]}</b> slides per document</span>
         </li>
-        <Feat ok>{p.credits[k]} AI Credits</Feat>
-        <Feat ok>{p.docs[k]} {docsLabel}</Feat>
+        <Feat ok>Unlimited downloads</Feat>
         <Feat ok={p.pdf}>PDF Export</Feat>
         <Feat ok={p.ppt}>PPT Export</Feat>
         <Feat ok={p.branding}>Custom Branding</Feat>
@@ -428,7 +420,7 @@ function PlanCard({ p, period, i }) {
           <p className="text-xs font-medium l-muted">Create</p>
           <p className="font-display text-2xl font-extrabold l-head">
             <span className={popular ? "text-emerald-400" : "text-sky-400"}>{p.slides[k]}</span>
-            <span className="ml-1.5 text-base font-semibold l-muted">Slides</span>
+            <span className="ml-1.5 text-base font-semibold l-muted">Slides{per}</span>
           </p>
         </div>
       </div>

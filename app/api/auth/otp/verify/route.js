@@ -64,7 +64,7 @@ export async function POST(request) {
         phone: e164,
         plan: "free",
         period: "monthly",
-        docsLimit: 2, docsUsed: 0, snipsLimit: 2, snipsUsed: 0,
+        slidesLimit: 50, slidesUsed: 0, // Free plan allowance — keep in step with PLANS.free.slides
         createdAt: FieldValue.serverTimestamp(),
       });
       await fdb.collection("phoneIndex").doc(e164).set({ uid, email: email || "" });

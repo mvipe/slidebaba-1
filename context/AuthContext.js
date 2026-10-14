@@ -62,10 +62,9 @@ export function AuthProvider({ children }) {
 
     // The free plan's OWN allowance, not zero.
     //
-    // This used to write docsLimit: 0 / snipsLimit: 0. remaining() reads
-    // `profile.docsLimit ?? planDefault`, and `??` keeps a stored ZERO — so every
-    // brand-new free account had a limit of 0 documents and was shown the payment
-    // modal on its very first upload, before it had scanned anything at all.
+    // This used to write a limit of 0. remaining() reads `profile.limit ?? planDefault`,
+    // and `??` keeps a stored ZERO — so every brand-new free account was shown the
+    // payment modal on its very first upload, before it had scanned anything at all.
     const freeLimits = planLimits("free", "monthly");
     const profileData = {
       uid: cred.user.uid,
@@ -74,10 +73,8 @@ export function AuthProvider({ children }) {
       phone: e164,
       plan: "free",
       period: "monthly",
-      docsLimit: freeLimits.docs,
-      docsUsed: 0,
-      snipsLimit: freeLimits.snips,
-      snipsUsed: 0,
+      slidesLimit: freeLimits.slides,
+      slidesUsed: 0,
       createdAt: serverTimestamp(),
     };
     await setDoc(doc(db, "users", cred.user.uid), profileData);
