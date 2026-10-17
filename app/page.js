@@ -114,17 +114,17 @@ export default function LandingPage() {
         <div className="pointer-events-none absolute right-0 top-40 h-72 w-72 rounded-full bg-sky-500/15 blur-3xl dark:bg-sky-500/20 sm:bg-accent-500/15 sm:dark:bg-accent-500/20" />
         <div className="pointer-events-none absolute -left-10 top-60 h-64 w-64 rounded-full bg-emerald-500/10 blur-3xl" />
 
-        <div className="container-x relative grid items-center gap-12 py-16 lg:grid-cols-2 lg:py-24">
+        <div className="container-x relative grid items-center gap-14 py-12 sm:py-16 lg:grid-cols-2 lg:py-24">
           <div>
             <motion.span variants={fade} initial="hidden" animate="show" className="inline-flex items-center gap-2 rounded-full bg-emerald-500/10 px-3.5 py-1.5 text-xs font-bold uppercase tracking-wider text-emerald-500 ring-1 ring-inset ring-emerald-500/30 dark:text-emerald-300">
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> Powered by Thumbnail Baba
             </motion.span>
-            <motion.h1 variants={fade} initial="hidden" animate="show" custom={1} className="mt-5 font-display text-4xl font-extrabold leading-[1.08] tracking-tight l-head sm:text-5xl lg:text-[2.5rem] xl:text-5xl">
-              <span className="whitespace-nowrap">Transform Books into</span>
-              <br />
+            <motion.h1 variants={fade} initial="hidden" animate="show" custom={1} className="mt-5 font-display text-[2rem] font-extrabold leading-[1.1] tracking-tight l-head min-[400px]:text-4xl sm:text-5xl lg:text-[2.5rem] xl:text-5xl">
+              <span className="sm:whitespace-nowrap">Transform Books into</span>
+              <br className="hidden sm:block" />{" "}
               <span className="gradient-text">Smart PPTs &amp; Notes</span>
             </motion.h1>
-            <motion.p variants={fade} initial="hidden" animate="show" custom={2} className="mt-5 max-w-xl text-lg leading-relaxed l-muted">
+            <motion.p variants={fade} initial="hidden" animate="show" custom={2} className="mt-5 max-w-xl text-base leading-relaxed l-muted sm:text-lg">
               Upload your raw PDFs, handwritten notes, or textbook images. SlideBaba reads complex math equations with Vision OCR and auto-formats them into editable presentations and A4 PDFs — instantly.
             </motion.p>
             <motion.div variants={fade} initial="hidden" animate="show" custom={3} className="mt-8 flex flex-col gap-3 sm:flex-row">
@@ -157,7 +157,7 @@ export default function LandingPage() {
             </div>
 
             <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.5, duration: 0.5 }}
-              className="absolute -left-5 -top-6 z-20 animate-floaty rounded-2xl bg-white p-3 shadow-glow ring-1 ring-black/5 dark:bg-ink-800 dark:ring-white/10">
+              className="absolute -top-6 left-0 z-20 sm:-left-5 animate-floaty rounded-2xl bg-white p-3 shadow-glow ring-1 ring-black/5 dark:bg-ink-800 dark:ring-white/10">
               <div className="flex items-center gap-2.5">
                 <span className="grid h-9 w-9 place-items-center rounded-lg bg-sky-500/15 text-sky-400"><Upload className="h-4 w-4" /></span>
                 <div className="pr-1">
@@ -179,7 +179,7 @@ export default function LandingPage() {
             </motion.div>
 
             <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.9, duration: 0.5 }}
-              className="absolute -bottom-6 left-8 z-20 animate-floaty rounded-2xl bg-white p-3 shadow-glow ring-1 ring-black/5 dark:bg-ink-800 dark:ring-white/10" style={{ animationDelay: "0.6s" }}>
+              className="absolute -bottom-6 left-4 z-20 sm:left-8 animate-floaty rounded-2xl bg-white p-3 shadow-glow ring-1 ring-black/5 dark:bg-ink-800 dark:ring-white/10" style={{ animationDelay: "0.6s" }}>
               <div className="flex items-center gap-2.5">
                 <span className="grid h-9 w-9 place-items-center rounded-lg bg-yellow-400/20 text-yellow-500"><Sparkles className="h-4 w-4" /></span>
                 <div className="pr-1">
@@ -268,8 +268,8 @@ export default function LandingPage() {
 
           {/* billing toggle */}
           <div className="mx-auto mt-8 flex w-fit items-center gap-1 rounded-full bg-slate-100 p-1 ring-1 ring-inset ring-black/5 dark:bg-ink-800 dark:ring-white/10">
-            <button onClick={() => setBilling("monthly")} className={`rounded-full px-5 py-2 text-sm font-bold transition ${!yearly ? "bg-ink-900 text-white dark:bg-white dark:text-ink-900" : "l-muted hover:text-ink-900 dark:hover:text-white"}`}>Monthly</button>
-            <button onClick={() => setBilling("yearly")} className={`flex items-center gap-2 rounded-full px-5 py-2 text-sm font-bold transition ${yearly ? "bg-ink-900 text-white dark:bg-white dark:text-ink-900" : "l-muted hover:text-ink-900 dark:hover:text-white"}`}>
+            <button onClick={() => setBilling("monthly")} className={`rounded-full px-4 py-2 text-sm font-bold transition sm:px-5 ${!yearly ? "bg-ink-900 text-white dark:bg-white dark:text-ink-900" : "l-muted hover:text-ink-900 dark:hover:text-white"}`}>Monthly</button>
+            <button onClick={() => setBilling("yearly")} className={`flex items-center gap-2 rounded-full px-4 py-2 text-sm font-bold transition sm:px-5 ${yearly ? "bg-ink-900 text-white dark:bg-white dark:text-ink-900" : "l-muted hover:text-ink-900 dark:hover:text-white"}`}>
               Yearly <span className="rounded-full bg-emerald-500 px-2 py-0.5 text-[10px] font-bold text-white">SAVE ~20%</span>
             </button>
           </div>
@@ -286,7 +286,7 @@ export default function LandingPage() {
 
           {/* special one-time plans — independent of the monthly/yearly toggle */}
           <div className="mx-auto mt-14 max-w-3xl">
-            <div className="mb-5 flex items-center gap-3">
+            <div className="mb-5 flex flex-wrap items-center gap-x-3 gap-y-2">
               <h3 className="font-display text-lg font-extrabold l-head">Special long-term plans</h3>
               <span className="rounded-full bg-amber-500/15 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-600 dark:text-amber-300">One-time payment</span>
             </div>
@@ -314,7 +314,7 @@ export default function LandingPage() {
             </div>
           </motion.div>
 
-          <motion.div variants={reveal} initial="hidden" whileInView="show" viewport={vp} className="mt-6 flex items-center justify-center gap-2 rounded-3xl border border-emerald-500/30 bg-emerald-500/5 px-6 py-5 text-center">
+          <motion.div variants={reveal} initial="hidden" whileInView="show" viewport={vp} className="mt-6 flex items-center justify-center gap-2 rounded-3xl border border-emerald-500/30 bg-emerald-500/5 px-4 py-5 text-center sm:px-6">
             <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-500" />
             <p className="text-sm font-semibold l-head sm:text-base">
               <Link href="/register" className="text-emerald-500 hover:underline">Register now</Link> and start creating amazing presentations!
@@ -347,8 +347,8 @@ export default function LandingPage() {
       {/* ============ CTA ============ */}
       <section className="section">
         <div className="container-x">
-          <motion.div variants={reveal} initial="hidden" whileInView="show" viewport={vp} className="relative overflow-hidden rounded-3xl bg-gradient-to-b from-emerald-500/10 to-transparent px-8 py-16 text-center ring-1 ring-emerald-500/20 sm:px-16">
-            <div className="pointer-events-none absolute left-1/2 top-0 h-48 w-[36rem] -translate-x-1/2 rounded-full bg-emerald-500/20 blur-3xl" />
+          <motion.div variants={reveal} initial="hidden" whileInView="show" viewport={vp} className="relative overflow-hidden rounded-3xl bg-gradient-to-b from-emerald-500/10 to-transparent px-5 py-12 text-center ring-1 ring-emerald-500/20 sm:px-16 sm:py-16">
+            <div className="pointer-events-none absolute left-1/2 top-0 h-48 w-full max-w-[36rem] -translate-x-1/2 rounded-full bg-emerald-500/20 blur-3xl" />
             <h2 className="relative font-display text-3xl font-extrabold tracking-tight l-head sm:text-4xl">Ready to automate your <span className="gradient-text">study notes?</span></h2>
             <p className="relative mx-auto mt-4 max-w-xl l-muted">Join thousands of users who are saving hours every week. Create your first smart presentation in seconds.</p>
             <Link href="/register" className="btn mt-8 bg-ink-900 text-white shadow-glow hover:-translate-y-0.5 dark:bg-white dark:text-ink-900">Start Generating for Free <ArrowRight className="h-4 w-4" /></Link>

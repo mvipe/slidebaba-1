@@ -26,7 +26,7 @@ export default function LandingNav() {
 
   return (
     <header className={`sticky top-0 z-50 border-b backdrop-blur-md transition-all duration-300 ${scrolled ? "border-black/5 bg-white/85 shadow-sm dark:border-white/10 dark:bg-ink-900/80" : "border-transparent bg-white/60 dark:bg-ink-900/40"}`}>
-      <nav className={`mx-auto flex w-full max-w-[1640px] items-center justify-between px-5 transition-all duration-300 sm:px-8 lg:px-12 ${scrolled ? "h-16" : "h-20"}`}>
+      <nav className={`mx-auto flex w-full max-w-[1640px] items-center justify-between px-4 transition-all duration-300 sm:px-8 lg:px-12 ${scrolled ? "h-16" : "h-20"}`}>
         <Link href="/" className="text-ink-900 dark:text-white">
           <Logo />
         </Link>
@@ -86,9 +86,14 @@ export default function LandingNav() {
               className="flex items-center gap-2 rounded-lg px-3 py-2.5 text-left text-sm font-medium text-slate-700 hover:bg-black/5 dark:text-slate-300 dark:hover:bg-ink-800"
               label="Watch tutorial"
             />
-            <Link href="/register" onClick={() => setOpen(false)} className="btn-cool mt-2">
-              Get started free
-            </Link>
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              <Link href="/login" onClick={() => setOpen(false)} className="l-ghost">
+                Log in
+              </Link>
+              <Link href="/register" onClick={() => setOpen(false)} className="btn-cool">
+                Get started free
+              </Link>
+            </div>
           </div>
         </div>
       )}
