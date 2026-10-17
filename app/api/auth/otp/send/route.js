@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { ERROR_KIND, devOr, publicError } from "@/lib/userError";
 import { adminAuth } from "@/lib/firebaseAdmin";
 
 export const runtime = "nodejs";
@@ -7,7 +8,7 @@ const digits = (s) => String(s || "").replace(/[^\d]/g, "");
 export async function POST(request) {
   const authkey = process.env.MSG91_AUTHKEY;
   const templateId = process.env.MSG91_TEMPLATE_ID;
-  if (!authkey || !templateId) return NextResponse.json({ ok: false, error: "OTP service is not configured (MSG91)." }, { status: 500 });
+  if (!authkey || !templateId) { console.error("[SlideBaba/otp] MSG91 is not configured (MSG91_AUTHKEY / MSG91_TEMPLATE_ID)."); return NextResponse.json({ ok: false, error: publicError("OTP service is not configured (MSG91).", ERROR_KIND.CONFIG, "login") }, { status: 500 }); }
 
   let body; try { body = await request.json(); } catch { return NextResponse.json({ ok: false, error: "Invalid request." }, { status: 400 }); }
   const e164 = String(body?.phone || "").trim();
@@ -24,6 +25,7 @@ export async function POST(request) {
         return NextResponse.json({ ok: false, notRegistered: true, error: "This number isn't registered. Please create an account." }, { status: 404 });
       }
       // Admin not configured / other transient error — don't block the OTP send.
+      console.error("[SlideBaba/otp] account lookup failed before sending OTP:", e?.code || "", e?.message || e);
     }
   }
 
@@ -32,8 +34,10 @@ export async function POST(request) {
     const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", authkey }, body: JSON.stringify({}) });
     const data = await res.json();
     if (data?.type === "success") return NextResponse.json({ ok: true });
-    return NextResponse.json({ ok: false, error: data?.message || "Could not send the OTP." }, { status: 502 });
+    console.error("[SlideBaba/otp] MSG91 send failed:", data);
+    return NextResponse.json({ ok: false, error: devOr(data?.message, "Couldn't send the code. Please wait a minute and try again.") }, { status: 502 });
   } catch (e) {
-    return NextResponse.json({ ok: false, error: "Could not reach the OTP service." }, { status: 502 });
+    console.error("[SlideBaba/otp] MSG91 send unreachable:", e);
+    return NextResponse.json({ ok: false, error: "Couldn't send the code. Please check your internet and try again." }, { status: 502 });
   }
 }

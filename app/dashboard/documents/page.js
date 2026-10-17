@@ -59,13 +59,13 @@ export default function DocumentsPage() {
           header: doc.header || {}, cols: doc.cols || 1, docId: d.id,
           chunks: doc.chunkCount ?? null, updatedAtMs: doc.updatedAt?.toMillis ? doc.updatedAt.toMillis() : 0,
         });
-        router.push("/notes");
+        router.push(`/notes?doc=${encodeURIComponent(d.id)}`);
       } else {
         saveHandoff({
           title: doc.name, format: "slides", slides: doc.slides || [], docId: d.id,
           chunks: doc.chunkCount ?? null, updatedAtMs: doc.updatedAt?.toMillis ? doc.updatedAt.toMillis() : 0,
         });
-        router.push("/editor");
+        router.push(`/editor?doc=${encodeURIComponent(d.id)}`);
       }
     } catch (e) {
       console.error("[SlideBaba] open document failed:", e);

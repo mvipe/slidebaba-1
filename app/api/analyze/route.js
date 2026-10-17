@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { splitSectionsIntoItems } from "@/lib/ocrStructure";
 import { openaiSplit, getOpenAIConfig } from "@/lib/openaiOcr";
 import { resolveEngine, ENGINE_LABEL } from "@/lib/ocrEngine";
+import { ERROR_KIND, publicError } from "@/lib/userError";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -81,8 +82,10 @@ export async function POST(request) {
   try {
     local = splitSectionsIntoItems(title, sections);
   } catch (err) {
+    console.error("[SlideBaba/analyze] local splitter failed:", err);
+    const raw = `Analyze failed: ${String(err?.message || err)}`;
     return NextResponse.json(
-      { ok: false, error: "Analyze failed", detail: String(err?.message || err) },
+      { ok: false, error: publicError(raw, ERROR_KIND.OTHER, "split"), errorKind: ERROR_KIND.OTHER },
       { status: 500 }
     );
   }
@@ -128,6 +131,8 @@ export async function POST(request) {
   }
 
   // Fall back rather than fail: the user still gets complete, verbatim slides.
+  if (note) console.error("[SlideBaba/analyze] ChatGPT split fell back to local:", note);
+  if (process.env.NODE_ENV === "production") note = "";
   return NextResponse.json({
     ok: true,
     items: local,

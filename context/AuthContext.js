@@ -13,6 +13,7 @@ import {
 import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
 import { maybeRenew, planLimits } from "@/lib/plan";
+import { userError } from "@/lib/userError";
 
 const AuthContext = createContext(null);
 
@@ -107,6 +108,16 @@ export function AuthProvider({ children }) {
     return data;
   };
 
+  // Firebase client errors read "Firebase: Error (auth/…)" — log that, show a plain message.
+  const signInWithToken = async (token) => {
+    try {
+      const cred = await signInWithCustomToken(auth, token);
+      return cred.user;
+    } catch (e) {
+      throw new Error(userError(e, "login"));
+    }
+  };
+
   const sendOtp = useCallback(async (phone) => {
     const e164 = normalizePhone(phone);
     const res = await fetch("/api/auth/otp/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: e164, mode: "login" }) });
@@ -130,8 +141,7 @@ export function AuthProvider({ children }) {
   const confirmOtp = useCallback(async (code, phone) => {
     const e164 = normalizePhone(phone || (typeof window !== "undefined" ? window._otpPhone : ""));
     const { token } = await postJSON("/api/auth/otp/verify", { phone: e164, otp: code, mode: "login" });
-    const cred = await signInWithCustomToken(auth, token);
-    return cred.user;
+    return signInWithToken(token);
   }, []);
 
   // Registration OTP — the account is created on the server when the OTP is verified.
@@ -145,8 +155,7 @@ export function AuthProvider({ children }) {
   const confirmRegisterOtp = useCallback(async (code, extra = {}) => {
     const e164 = normalizePhone(extra.phone || (typeof window !== "undefined" ? window._otpPhone : ""));
     const { token } = await postJSON("/api/auth/otp/verify", { phone: e164, otp: code, mode: "register", name: extra.name || "", email: extra.email || "" });
-    const cred = await signInWithCustomToken(auth, token);
-    return cred.user;
+    return signInWithToken(token);
   }, []);
 
   const resetPassword = useCallback(async (email) => sendPasswordResetEmail(auth, email), []);

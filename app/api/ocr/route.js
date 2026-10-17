@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 import { paddleOcr, paddleProbe, getPaddleConfig } from "@/lib/paddleocr";
 import { openaiOcr, openaiProbe, getOpenAIConfig } from "@/lib/openaiOcr";
+import { geminiOcr, getGeminiConfig } from "@/lib/geminiOcr";
 import { resolveEngine, enginesHealth, enginesHealthLive, normalizeEngine, ENGINE_LABEL } from "@/lib/ocrEngine";
 import { buildDocument } from "@/lib/ocrStructure";
+import { ERROR_KIND, classifyError, publicError } from "@/lib/userError";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -48,8 +50,22 @@ export const maxDuration = 300;
  * configuration and credential problems come back as 400 so it stops.
  */
 
-const bad = (error, status = 200, extra = {}) =>
-  NextResponse.json({ ok: false, error, ...extra }, { status });
+/**
+ * Every failure: the full reason goes to the server log, the response carries `errorKind`,
+ * and `error` is the raw text only in development — production users get a friendly line
+ * (see lib/userError.js), never a provider name, HTTP code or parameter.
+ */
+const bad = (error, status = 200, extra = {}, kind) => {
+  const errorKind = kind || classifyError({ status, message: error });
+  console.error(`[SlideBaba/ocr] ${errorKind}:`, error, extra.engine ? `(engine ${extra.engine})` : "");
+  return NextResponse.json({ ok: false, ...extra, error: publicError(error, errorKind, "scan"), errorKind }, { status });
+};
+
+/** Map an engine's failure class onto the user-facing kind. */
+const kindOf = (run) =>
+  run.kind === "throttle" ? ERROR_KIND.BUSY
+    : run.kind === "timeout" ? ERROR_KIND.NETWORK
+    : classifyError({ status: run.status, message: run.error });
 
 export async function POST(request) {
   let body;
@@ -60,10 +76,10 @@ export async function POST(request) {
   if (!image) return bad("Missing 'image' in request.", 400);
 
   const pick = resolveEngine(requested);
-  if (!pick.ok) return bad(pick.error, 400, { engine: pick.engine, engineConfigured: false });
+  if (!pick.ok) return bad(pick.error, 400, { engine: pick.engine, engineConfigured: false }, ERROR_KIND.CONFIG);
 
   const engine = pick.engine;
-  const cfg = engine === "openai" ? getOpenAIConfig() : getPaddleConfig();
+  const cfg = engine === "openai" ? getOpenAIConfig() : engine === "gemini" ? getGeminiConfig() : getPaddleConfig();
 
   // The Studio reads each page as a whole AND as overlapping high-resolution slices.
   // A slice must be transcribed without the model trying to invent the half it cannot
@@ -85,7 +101,9 @@ export async function POST(request) {
   try {
     const run = engine === "openai"
       ? await openaiOcr(image, cfg, openaiOpts)
-      : await paddleOcr(image, cfg);
+      : engine === "gemini"
+        ? await geminiOcr(image, cfg)
+        : await paddleOcr(image, cfg);
 
     if (!run.ok) {
       if (cfg.debug) {
@@ -98,7 +116,7 @@ export async function POST(request) {
         trace: run.trace,
         engine,
         engineLabel: ENGINE_LABEL[engine],
-      });
+      }, kindOf(run));
     }
 
     // ONE structurer for both engines — see the note above.
@@ -118,7 +136,8 @@ export async function POST(request) {
       return bad(
         `${ENGINE_LABEL[engine]} could not read any text on this page. Try a clearer or higher-resolution scan.`,
         200,
-        { retryable: true, engine, engineLabel: ENGINE_LABEL[engine] }
+        { retryable: true, engine, engineLabel: ENGINE_LABEL[engine] },
+        ERROR_KIND.UNREADABLE
       );
     }
 
@@ -141,7 +160,7 @@ export async function POST(request) {
       retryable: true,
       engine,
       engineLabel: ENGINE_LABEL[engine],
-    });
+    }, ERROR_KIND.NETWORK);
   }
 }
 
@@ -182,6 +201,7 @@ export async function GET(request) {
     if (!health.engines.find((e) => e.id === id)?.configured) {
       return { ok: false, error: `${ENGINE_LABEL[id]} is not configured.` };
     }
+    if (id === "gemini") return { ok: false, error: "No live probe for Model 3 (Gemini) — scan a page in the Studio to test it." };
     return id === "openai" ? openaiProbe() : paddleProbe();
   };
 

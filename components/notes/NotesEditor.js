@@ -23,6 +23,10 @@ import {
 } from "@/lib/notesDesign";
 import { useAutoSave } from "@/lib/useAutoSave";
 import { readLocalDraft, clearLocalDraft, localKey } from "@/lib/docStore";
+import { userError } from "@/lib/userError";
+import { questionParts } from "@/lib/questionLabel";
+import { loadDocument } from "@/lib/docs";
+import DocLoadOverlay from "@/components/DocLoadOverlay";
 import ThemeToggleButton from "@/components/ThemeToggleButton";
 
 const FONTS = ["Inter", "Sora", "Poppins", "Lora", "Merriweather", "Playfair Display", "Roboto", "Lato", "Nunito", "Georgia", "Arial", "Roboto Mono"];
@@ -37,8 +41,12 @@ function escapeHtml(s) { return String(s ?? "").replace(/&/g, "&amp;").replace(/
 function buildBodyHtml(items) {
   if (!items?.length) return "<p>Start typing your notes…</p>";
   return items.map((it, i) => {
-    const head = `<p class="q-head"><strong>${escapeHtml(it.title || `Question ${i + 1}`)}</strong></p>`;
-    return `<section class="q-block">${head}<div class="q-body">${renderMixedAnnotated(it.text || "")}</div></section>`;
+    // The question number goes IN FRONT of the question, on the same line ("1. एक अभाज्य…"),
+    // not on a heading line of its own above it. See lib/questionLabel.js.
+    const { label, title, text } = questionParts(it);
+    const num = label ? `<strong class="q-num">${escapeHtml(label)}</strong> ` : "";
+    const head = title ? `<p class="q-head"><strong>${escapeHtml(title || `Question ${i + 1}`)}</strong></p>` : "";
+    return `<section class="q-block">${head}<div class="q-body">${num}${renderMixedAnnotated(text)}</div></section>`;
   }).join("");
 }
 function blockToText(bodyEl) {
@@ -55,7 +63,7 @@ const readFile = (file) => new Promise((res, rej) => { const r = new FileReader(
 
 export default function NotesEditor() {
   const router = useRouter();
-  const { user, profile, mergeProfile } = useAuth();
+  const { user, profile, mergeProfile, loading: authLoading } = useAuth();
 
   const bodyRef = useRef(null);
   const hTitleRef = useRef(null);
@@ -69,6 +77,11 @@ export default function NotesEditor() {
 
   const [title, setTitle] = useState("Untitled Notes");
   const [docId, setDocId] = useState(null);
+  // Set while the document named in the address (/notes?doc=…) is fetched after a reload.
+  // Nothing is saved while it is set, so the empty page can never overwrite it.
+  const [pendingDocId, setPendingDocId] = useState(null);
+  const [docLoadError, setDocLoadError] = useState("");
+  const loadingDocRef = useRef(false);
   const [exporting, setExporting] = useState(false);
   const [dlOpen, setDlOpen] = useState(false);
   const [alignOpen, setAlignOpen] = useState(false);
@@ -90,10 +103,8 @@ export default function NotesEditor() {
   const [mathEdit, setMathEdit] = useState(null); // { node, display }
   const [mathDraft, setMathDraft] = useState("");
 
-  useEffect(() => {
-    if (didInit.current) return;
-    didInit.current = true;
-    const h = readHandoff();
+  // Show handed-over (or reloaded) notes, offering any newer unsaved copy on this device.
+  const applyNotes = (h) => {
     if (h?.title) setTitle(h.title);
     if (h?.docId) setDocId(h.docId);
     if (h?.cols === 2) setCols(2);
@@ -113,8 +124,6 @@ export default function NotesEditor() {
     if (hd.color) setHdColor(hd.color);
     if (hd.logo) setLogo(hd.logo);
     if (hd.design) setDesign(normalizeDesign(hd.design));
-    clearHandoff();
-
     // Anything that never made it to the server last time is still on this device.
     const key = localKey(user?.uid, h?.docId || null, "notes");
     const draft = readLocalDraft(key);
@@ -131,14 +140,62 @@ export default function NotesEditor() {
         clearLocalDraft(key);
       }
     }
+  };
+
+  useEffect(() => {
+    if (didInit.current) return;
+    didInit.current = true;
+    const h = readHandoff();
+
+    // After a reload the handoff is gone, but the address still names the document
+    // (/notes?doc=…). Fetch it instead of showing an empty page.
+    const urlDoc = new URLSearchParams(window.location.search).get("doc");
+    if (!h && urlDoc) {
+      loadingDocRef.current = true;
+      setPendingDocId(urlDoc);
+      return;
+    }
+    clearHandoff();
+    applyNotes(h);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Reload path: fetch the document named in the address once we know who is signed in.
+  useEffect(() => {
+    if (!pendingDocId) return;
+    if (!user) {
+      if (!authLoading) setDocLoadError("Please sign in to open this document.");
+      return;
+    }
+    let alive = true;
+    loadDocument(user.uid, pendingDocId, "notes")
+      .then((doc) => {
+        if (!alive) return;
+        if (!doc) throw new Error("That document no longer exists.");
+        loadingDocRef.current = false;
+        applyNotes({
+          title: doc.name, docId: pendingDocId, notesHtml: doc.notesHtml || "", items: doc.items || [],
+          header: doc.header || {}, cols: doc.cols || 1,
+        });
+        setPendingDocId(null);
+      })
+      .catch((e) => { if (alive) setDocLoadError(userError(e, "notes")); });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingDocId, user, authLoading]);
+
+  // Keep the open document in the address, so a reload brings it back.
+  useEffect(() => {
+    if (!docId) return;
+    const want = `/notes?doc=${encodeURIComponent(docId)}`;
+    if (window.location.pathname + window.location.search !== want) window.history.replaceState(window.history.state, "", want);
+  }, [docId]);
 
   /* Autosave. The notes body is read straight out of the DOM at save time, and the (often
      very large, image-bearing) HTML is written through the chunked store — a single
      Firestore document could not hold it, which is why saves used to fail while the header
      still said "Saved". */
-  const buildSnapshot = useCallback(() => ({
+  const buildSnapshot = useCallback(() => (loadingDocRef.current ? null : {
     meta: { name: title, format: "notes", status: "generated", cols },
     // `header` now travels in the PAYLOAD, not the metadata: a custom logo is a base64 data
     // URL, and on the parent document it blew past Firestore's 1 MiB cap and made every
@@ -296,7 +353,15 @@ export default function NotesEditor() {
           const head = blk.querySelector(".q-head")?.innerText?.trim();
           if (head) children.push(new Paragraph({ spacing: { before: 180, after: 40 }, children: [new TextRun({ text: head, bold: true, size: 24, color: "5B21B6" })] }));
           const bodyEl = blk.querySelector(".q-body");
-          if (bodyEl) blockToText(bodyEl).split("\n").forEach((line) => children.push(new Paragraph({ children: [new TextRun({ text: line, size: 22 })] })));
+          if (!bodyEl) return;
+          // The question number stays on the question's first line, bold, as on screen.
+          const num = bodyEl.querySelector(".q-num")?.innerText?.trim() || "";
+          let text = blockToText(bodyEl);
+          if (num && text.startsWith(num)) text = text.slice(num.length).replace(/^[ \t]+/, "");
+          text.split("\n").forEach((line, li) => {
+            const lead = li === 0 && num ? [new TextRun({ text: `${num} `, bold: true, size: 22, color: "5B21B6" })] : [];
+            children.push(new Paragraph({ spacing: li === 0 && !head ? { before: 180 } : undefined, children: [...lead, new TextRun({ text: line, size: 22 })] }));
+          });
         });
       } else {
         blockToText(bodyRef.current).split("\n").forEach((line) => children.push(new Paragraph({ children: [new TextRun({ text: line, size: 22 })] })));
@@ -304,18 +369,20 @@ export default function NotesEditor() {
       const doc = new Document({ sections: [{ properties: cols === 2 ? { column: { count: 2, space: 560 } } : {}, children }] });
       download(await Packer.toBlob(doc), `${title || "notes"}.docx`);
       recordUse(`${title || "notes"}.docx`, "docx");
-    } catch (e) { console.error("[SlideBaba] notes DOCX failed:", e); alert("Word export failed: " + (e?.message || e)); }
+    } catch (e) { alert(userError(e, "export")); }
     finally { setExporting(false); }
   };
 
   return (
     <div className="app-shell flex h-screen [height:100dvh] flex-col bg-slate-100 dark:bg-ink-950">
+      <DocLoadOverlay loading={!!pendingDocId && !docLoadError} error={docLoadError} what="notes" />
       <style>{`
         .notes-hd-field:empty:before{ content:attr(data-ph); opacity:.7; }
         .notes-body{ outline:none; }
         .notes-body.cols2{ column-count:2; column-gap:34px; }
         .notes-body .q-block{ break-inside:avoid; margin-bottom:22px; }
         .notes-body .q-head{ font-weight:800; color:#5b21b6; margin:0 0 6px; }
+        .notes-body .q-num{ font-weight:800; color:#5b21b6; }
         .notes-body .q-body{ white-space:pre-wrap; line-height:1.7; color:#1e293b; }
         /* Urdu glyphs fall back to Nastaliq (per-glyph); Latin/Devanagari keep their font. */
         .notes-body, .notes-body .q-body, .notes-body .q-head{ font-family: inherit, 'Noto Nastaliq Urdu'; }

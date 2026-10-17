@@ -6,11 +6,11 @@ import {
   ArrowLeft, Layers, Type as TypeIcon, Shapes, ImagePlus, Palette, Wallpaper,
   Eye, Download, Plus, Copy, Trash2, ChevronLeft, ChevronRight, Cloud, CloudOff, X,
   Square, Circle, Minus, Upload, Loader2, FileText, Presentation, ChevronDown, Crown, Check,
-  Table as TableIcon,
+  Table as TableIcon, ChevronUp, GripVertical,
 } from "lucide-react";
 import Toolbar from "@/components/editor/Toolbar";
 import { renderMixed } from "@/components/Katex";
-import { THEMES, DEFAULT_THEME, uid, readHandoff, clearHandoff, newText, newRect, newEllipse, newLine, newImage, newTable } from "@/lib/slideStore";
+import { THEMES, DEFAULT_THEME, uid, readHandoff, clearHandoff, textRole, newText, newRect, newEllipse, newLine, newImage, newTable } from "@/lib/slideStore";
 import { useAuth } from "@/context/AuthContext";
 import { saveDownload, listBackgrounds, saveBackground, removeBackground } from "@/lib/docs";
 import {
@@ -20,6 +20,9 @@ import { useAutoSave } from "@/lib/useAutoSave";
 import { readLocalDraft, clearLocalDraft, localKey } from "@/lib/docStore";
 import { listGlobalBackgrounds } from "@/lib/admin";
 import { saveBrand } from "@/lib/plan";
+import { userError } from "@/lib/userError";
+import { loadDocument } from "@/lib/docs";
+import DocLoadOverlay from "@/components/DocLoadOverlay";
 import { downscaleDataUrl, fileToDataUrl, imageSize } from "@/lib/imageCrop";
 import { exportSlidesPptx, exportSlidesPdf } from "@/lib/slideExport";
 import ThemeToggleButton from "@/components/ThemeToggleButton";
@@ -50,7 +53,7 @@ const slideBg = slideBgStyle;
 
 export default function Editor() {
   const router = useRouter();
-  const { user, profile, mergeProfile } = useAuth();
+  const { user, profile, mergeProfile, loading: authLoading } = useAuth();
   const canvasRef = useRef(null);
   const dragRef = useRef(null);
   const moveRef = useRef(null);
@@ -63,6 +66,11 @@ export default function Editor() {
   const [slides, setSlides] = useState([blankSlide()]);
   const [docId, setDocId] = useState(null);
   const hasEditedRef = useRef(false);
+  // Set while the document named in the address (/editor?doc=…) is fetched after a reload.
+  // Nothing is saved while it is set, so the placeholder slide can never overwrite it.
+  const [pendingDocId, setPendingDocId] = useState(null);
+  const [docLoadError, setDocLoadError] = useState("");
+  const loadingDocRef = useRef(false);
   const [current, setCurrent] = useState(0);
   const [selectedId, setSelectedId] = useState(null);
   const [editingId, setEditingId] = useState(null);
@@ -100,7 +108,7 @@ export default function Editor() {
      `build` describes what should be persisted. The heavy `slides` array is routed into
      chunked storage by lib/docs.js, so a deck full of images can never blow past the 1 MiB
      Firestore document limit — which is what used to make saves fail silently. */
-  const buildSnapshot = useCallback(() => ({
+  const buildSnapshot = useCallback(() => (loadingDocRef.current ? null : {
     meta: { name: title, format: "slides", status: "generated" },
     payload: { slides },
   }), [title, slides]);
@@ -108,21 +116,9 @@ export default function Editor() {
   const saver = useAutoSave({ user, docId, setDocId, build: buildSnapshot, format: "slides" });
   const { markDirty } = saver;
 
-  // Load the document handed over from Studio / My Documents, and restore anything that was
-  // still unsaved on this device the last time the editor was open.
-  useEffect(() => {
-    const h = readHandoff();
-
-    // Claim the document id ALWAYS, and clear the handoff ALWAYS — even when the handoff
-    // carries no slides.
-    //
-    // This used to happen only inside `if (h?.slides?.length)`. Opening a document that had
-    // no slides version therefore left docId === null, so the first keystroke made autosave
-    // take its "create" branch and mint a SECOND document, orphaning the original — which is
-    // how work appeared to vanish from My Documents. The stale handoff also leaked into the
-    // next navigation, so the wrong document could open afterwards.
+  // Show a handed-over (or reloaded) deck, offering any newer unsaved copy on this device.
+  const applyDeck = (h) => {
     const handoffDocId = h?.docId || null;
-    if (h) clearHandoff();
     if (handoffDocId) setDocId(handoffDocId);
 
     let loaded = null;
@@ -159,8 +155,63 @@ export default function Editor() {
       setTitle(loaded.title);
       saver.primeFrom({ slides: loaded.slides }, { name: loaded.title, format: "slides", status: "generated" }, h?.chunks ?? null);
     }
+  };
+
+  useEffect(() => {
+    const h = readHandoff();
+
+    // After a reload the handoff is gone, but the address still names the document
+    // (/editor?doc=…). Fetch it instead of showing the "Click to edit your title" placeholder.
+    const urlDoc = new URLSearchParams(window.location.search).get("doc");
+    if (!h && urlDoc) {
+      loadingDocRef.current = true;
+      setPendingDocId(urlDoc);
+      return;
+    }
+
+    // Claim the document id ALWAYS, and clear the handoff ALWAYS — even when the handoff
+    // carries no slides.
+    //
+    // This used to happen only inside `if (h?.slides?.length)`. Opening a document that had
+    // no slides version therefore left docId === null, so the first keystroke made autosave
+    // take its "create" branch and mint a SECOND document, orphaning the original — which is
+    // how work appeared to vanish from My Documents. The stale handoff also leaked into the
+    // next navigation, so the wrong document could open afterwards.
+    if (h) clearHandoff();
+    applyDeck(h);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Reload path: fetch the document named in the address once we know who is signed in.
+  useEffect(() => {
+    if (!pendingDocId) return;
+    if (!user) {
+      if (!authLoading) setDocLoadError("Please sign in to open this document.");
+      return;
+    }
+    let alive = true;
+    loadDocument(user.uid, pendingDocId, "slides")
+      .then((doc) => {
+        if (!alive) return;
+        if (!doc) throw new Error("That document no longer exists.");
+        loadingDocRef.current = false;
+        applyDeck({
+          slides: doc.slides || [], title: doc.name, docId: pendingDocId,
+          chunks: doc.chunkCount ?? null, updatedAtMs: doc.updatedAt?.toMillis ? doc.updatedAt.toMillis() : 0,
+        });
+        setPendingDocId(null);
+      })
+      .catch((e) => { if (alive) setDocLoadError(userError(e, "open")); });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingDocId, user, authLoading]);
+
+  // Keep the open document in the address, so a reload brings it back.
+  useEffect(() => {
+    if (!docId) return;
+    const want = `/editor?doc=${encodeURIComponent(docId)}`;
+    if (window.location.pathname + window.location.search !== want) window.history.replaceState(window.history.state, "", want);
+  }, [docId]);
 
   const slide = slides[current];
   const selected = slide?.elements.find((e) => e.id === selectedId) || null;
@@ -217,17 +268,22 @@ export default function Editor() {
     else mapCurrent((sl) => ({ ...sl, elements: sl.elements.map((e) => (e.id === id ? { ...e, ...patch } : e)) }));
   };
   const updateSelected = (patch) => selected && patchEl(selected.id, patch);
-  // Style scope: apply font/colour/etc. to just this element, every text box on this slide, or all slides.
+  // Style scope: apply font/colour/etc. to just this element, or to every box OF THE SAME
+  // KIND on this slide / on all slides — question with question, options with options,
+  // titles with titles (textRole in lib/slideStore.js). Every text box used to be treated
+  // alike, so recolouring the question recoloured the options too.
   const isTextEl = (e) => e.type === "text" || !e.type;
   const applyStyle = (patch) => {
     if (!selected) return;
     // If words are selected inside the box being edited, style just those words.
     if (editingId === selected.id && selApiRef.current?.applyToSelection?.(patch)) return;
     if (styleScope === "element" || !isTextEl(selected)) { patchEl(selected.id, patch); return; }
+    const role = textRole(selected);
+    const same = (e) => isTextEl(e) && textRole(e) === role;
     if (styleScope === "slide") {
-      mapCurrent((sl) => ({ ...sl, elements: sl.elements.map((e) => (isTextEl(e) ? { ...e, ...patch } : e)) }));
+      mapCurrent((sl) => ({ ...sl, elements: sl.elements.map((e) => (same(e) ? { ...e, ...patch } : e)) }));
     } else {
-      commit((arr) => arr.map((sl) => ({ ...sl, elements: sl.elements.map((e) => (isTextEl(e) ? { ...e, ...patch } : e)) })));
+      commit((arr) => arr.map((sl) => ({ ...sl, elements: sl.elements.map((e) => (same(e) ? { ...e, ...patch } : e)) })));
     }
   };
   const deleteSelected = () => {
@@ -392,6 +448,14 @@ export default function Editor() {
   const addSlide = () => { const sl = blankSlide(slide?.theme || DEFAULT_THEME); commit((s) => [...s.slice(0, current + 1), sl, ...s.slice(current + 1)]); setCurrent(current + 1); setSelectedId(null); };
   const duplicateSlide = () => { const copy = { ...slide, id: uid("slide"), elements: slide.elements.map((e) => ({ ...e, id: uid("el") })) }; commit((s) => [...s.slice(0, current + 1), copy, ...s.slice(current + 1)]); setCurrent(current + 1); };
   const deleteSlide = () => { if (slides.length === 1) return; commit((s) => s.filter((_, i) => i !== current)); setCurrent((c) => Math.max(0, c - 1)); setSelectedId(null); };
+  // Reorder: move the slide at `from` so it ends up at index `to`. Goes through commit(), so
+  // it is undoable and autosaved like every other edit; the moved slide stays selected.
+  const moveSlide = (from, to) => {
+    if (from === to || from < 0 || to < 0 || from >= slides.length || to >= slides.length) return;
+    commit((s) => { const a = [...s]; const [m] = a.splice(from, 1); a.splice(to, 0, m); return a; });
+    setCurrent(to);
+    setSelectedId(null);
+  };
 
   // drag
   const onElMouseDown = (e, el) => {
@@ -506,11 +570,7 @@ export default function Editor() {
         }).catch(() => {});
       }
     } catch (e) {
-      console.error("[SlideBaba] export failed:", e);
-      alert(
-        "Sorry, the export failed: " + (e?.message || e) +
-        "\n\nYour slides are safe. Try again, or export fewer slides at a time if this is a very large deck.",
-      );
+      alert(userError(e, "export"));
     } finally {
       setExporting(false);
       setExportProgress(null);
@@ -519,6 +579,7 @@ export default function Editor() {
 
   return (
     <div className="app-shell flex h-screen [height:100dvh] flex-col bg-ink-950">
+      <DocLoadOverlay loading={!!pendingDocId && !docLoadError} error={docLoadError} what="slides" />
       <header className="flex min-h-[3.5rem] flex-wrap items-center justify-between gap-y-2 border-b border-white/10 bg-ink-900/80 px-2 py-2 sm:h-14 sm:flex-nowrap sm:py-0 sm:px-4">
         <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
           <button onClick={() => router.push("/dashboard/studio")} className="grid h-9 w-9 shrink-0 place-items-center rounded-md text-slate-300 hover:bg-ink-700 hover:text-white"><ArrowLeft className="h-4 w-4" /></button>
@@ -581,7 +642,7 @@ export default function Editor() {
         {mobileSheet && <div className="fixed inset-0 z-30 bg-black/50 md:hidden" onClick={() => setMobileSheet(false)} />}
         <div className={`${mobileSheet ? "translate-y-0" : "translate-y-full"} fixed inset-x-0 bottom-0 z-40 max-h-[62vh] overflow-y-auto rounded-t-2xl border-t border-white/10 bg-ink-900 p-3 pb-6 shadow-glow transition-transform duration-200 md:static md:z-auto md:max-h-none md:w-60 md:shrink-0 md:translate-y-0 md:rounded-none md:border-r md:border-t-0 md:bg-ink-900/60 md:pb-3 md:shadow-none md:transition-none`}>
           <button onClick={() => setMobileSheet(false)} className="mx-auto mb-3 block h-1.5 w-12 rounded-full bg-white/20 md:hidden" aria-label="Close panel" />
-          {rail === "slides" && <SlidesPanel slides={slides} current={current} theme={theme} onSelect={(i) => { setCurrent(i); setSelectedId(null); }} onAdd={addSlide} onDup={duplicateSlide} onDelete={deleteSlide} />}
+          {rail === "slides" && <SlidesPanel slides={slides} current={current} theme={theme} onSelect={(i) => { setCurrent(i); setSelectedId(null); }} onAdd={addSlide} onDup={duplicateSlide} onDelete={deleteSlide} onMove={moveSlide} />}
           {rail === "text" && (
             <div className="space-y-2">
               <p className="px-1 text-xs font-bold uppercase tracking-widest text-slate-500">Text</p>
@@ -1088,12 +1149,30 @@ function ElementView({ el, theme, selected, editing, scale = 1, onMouseDown, onD
   );
 }
 
-function SlidesPanel({ slides, current, theme, onSelect, onAdd, onDup, onDelete }) {
+function SlidesPanel({ slides, current, theme, onSelect, onAdd, onDup, onDelete, onMove }) {
+  // Drag-and-drop reordering. `over` is the INSERTION point (0..slides.length): the blue
+  // line is drawn before slide `over`, or after the last slide when over === slides.length.
+  const [dragFrom, setDragFrom] = useState(null);
+  const [over, setOver] = useState(null);
+  const endDrag = () => { setDragFrom(null); setOver(null); };
+  const dropAt = (insertAt) => {
+    if (dragFrom == null || insertAt == null) return endDrag();
+    // Removing the dragged slide first shifts everything after it up by one.
+    const to = insertAt > dragFrom ? insertAt - 1 : insertAt;
+    if (to !== dragFrom) onMove?.(dragFrom, to);
+    endDrag();
+  };
+  const line = <div className="h-1 rounded-full bg-brand-400 shadow-[0_0_8px_rgba(124,92,255,0.8)]" />;
+  const btn = "grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-ink-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent";
+
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between px-1">
         <p className="text-xs font-bold uppercase tracking-widest text-slate-500">Slides</p>
         <div className="flex gap-1">
+          {/* Up / down for the selected slide — drag and drop does not work with touch. */}
+          <button onClick={() => onMove?.(current, current - 1)} disabled={current <= 0} className={btn} title="Move slide up"><ChevronUp className="h-3.5 w-3.5" /></button>
+          <button onClick={() => onMove?.(current, current + 1)} disabled={current >= slides.length - 1} className={btn} title="Move slide down"><ChevronDown className="h-3.5 w-3.5" /></button>
           <button onClick={onDup} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-ink-700 hover:text-white" title="Duplicate"><Copy className="h-3.5 w-3.5" /></button>
           <button onClick={onDelete} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-ink-700 hover:text-accent-400" title="Delete"><Trash2 className="h-3.5 w-3.5" /></button>
         </div>
@@ -1101,8 +1180,26 @@ function SlidesPanel({ slides, current, theme, onSelect, onAdd, onDup, onDelete 
       {slides.map((sl, i) => {
         const t = THEMES[sl.theme] || theme;
         return (
-          <button key={sl.id} onClick={() => onSelect(i)} className={`group relative block w-full overflow-hidden rounded-lg ring-1 transition ${i === current ? "ring-2 ring-brand-400" : "ring-white/10 hover:ring-brand-400/50"}`}>
+          <div key={sl.id} className="space-y-2">
+          {dragFrom != null && over === i && line}
+          <button
+            onClick={() => onSelect(i)}
+            draggable
+            onDragStart={(e) => { setDragFrom(i); e.dataTransfer.effectAllowed = "move"; try { e.dataTransfer.setData("text/plain", String(i)); } catch {} }}
+            onDragOver={(e) => {
+              if (dragFrom == null) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+              const r = e.currentTarget.getBoundingClientRect();
+              setOver(e.clientY < r.top + r.height / 2 ? i : i + 1);
+            }}
+            onDrop={(e) => { e.preventDefault(); dropAt(over); }}
+            onDragEnd={endDrag}
+            title="Drag to reorder"
+            className={`group relative block w-full cursor-grab overflow-hidden rounded-lg ring-1 transition active:cursor-grabbing ${i === current ? "ring-2 ring-brand-400" : "ring-white/10 hover:ring-brand-400/50"} ${dragFrom === i ? "opacity-40" : ""}`}
+          >
             <span className="absolute left-1.5 top-1.5 z-10 rounded bg-black/40 px-1.5 text-[10px] font-bold text-white">{i + 1}</span>
+            <span className="absolute right-1 top-1.5 z-10 rounded bg-black/40 p-0.5 text-white opacity-0 transition group-hover:opacity-100"><GripVertical className="h-3 w-3" /></span>
             <div className="aspect-video p-2 text-left" style={{ ...slideBg(sl, t), color: t.text }}>
               {/* A table shows its first row rather than nothing — a slide whose only content
                   is a table used to look empty in this list. */}
@@ -1118,8 +1215,18 @@ function SlidesPanel({ slides, current, theme, onSelect, onAdd, onDup, onDelete 
                 ))}
             </div>
           </button>
+          </div>
         );
       })}
+      {dragFrom != null && over === slides.length && line}
+      {/* Dropping below the last slide moves the dragged slide to the end. */}
+      {dragFrom != null && (
+        <div
+          className="h-8 rounded-lg border border-dashed border-white/10"
+          onDragOver={(e) => { e.preventDefault(); setOver(slides.length); }}
+          onDrop={(e) => { e.preventDefault(); dropAt(slides.length); }}
+        />
+      )}
       <button onClick={onAdd} className="btn-ghost w-full justify-center border border-dashed border-white/15 bg-transparent"><Plus className="h-4 w-4" /> Add slide</button>
     </div>
   );

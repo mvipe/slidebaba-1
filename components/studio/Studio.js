@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   Cpu, Scissors, Loader2, Trash2, CheckCircle2, Circle,
   ArrowRight, FileUp, Crosshair, Scan, RefreshCw, FileText, Presentation,
-  Laptop, Bot, AlertTriangle, Target, Zap,
+  Laptop, Bot, AlertTriangle, Target, Zap, Sparkles,
 } from "lucide-react";
 import { renderMixed } from "@/components/Katex";
 import RegionSelector from "@/components/studio/RegionSelector";
@@ -15,6 +15,8 @@ import { buildFittedSlides } from "@/lib/slideLayout";
 import { saveDocument, updateDocument, touchDocument } from "@/lib/docs";
 import { checkDocumentLimits, consume, remaining, maxPagesFor, maxSlidesFor, PLANS } from "@/lib/plan";
 import PlanModal from "@/components/subscription/PlanModal";
+import { userError } from "@/lib/userError";
+import { inlineQuestion } from "@/lib/questionLabel";
 import {
   openPdf, pdfToPageImages, fileToDataUrl, imageSize, cropImage, downscaleDataUrl,
   tilePageImage, sliceForAccuracy, analyzePageLayout, makeThumb,
@@ -293,11 +295,36 @@ const ENGINE_META = {
       { maxDim: 1150, quality: 0.68 },
     ],
   },
+  gemini: {
+    id: "gemini",
+    label: "Model 3",
+    sub: "Gemini Flash (testing)",
+    Icon: Sparkles,
+    // TESTING engine on the free tier: a few requests per minute, so one page at a time.
+    // The server also queues Gemini calls one by one and waits out a per-minute 429.
+    concurrency: 1,
+    sliceConcurrency: 1,
+    analyzeConcurrency: 4,
+    tries: 1,
+    slice: false,
+    maxSlices: 2,
+    tiles: false,
+    sizes: [
+      { maxDim: 1800, quality: 0.92 },
+      { maxDim: 1500, quality: 0.85 },
+      { maxDim: 1200, quality: 0.75 },
+    ],
+  },
 };
 
-const ENGINE_ORDER = ["openai", "paddle"];
-/** Fallback when the server has not answered yet — Model 1, matching lib/ocrEngine.js. */
-const FALLBACK_ENGINE = "openai";
+const ENGINE_ORDER = ["openai", "paddle", "gemini"];
+/**
+ * The models users may pick. The others still show in the row, greyed out and not
+ * clickable. To switch a model back on, add its id here.
+ */
+const ENABLED_ENGINES = ["gemini"];
+/** The model selected when the page opens (and before the server has answered). */
+const FALLBACK_ENGINE = "gemini";
 
 /* --------------------------------------------------------------------------
  * The speed/accuracy dial
@@ -365,35 +392,12 @@ const fmtClock = (sec) => `${Math.floor(sec / 60)}:${String(Math.max(0, Math.rou
 /* -------------------------------------------------------------------------- */
 
 /**
- * Turn a Firestore failure into a sentence that names the actual cause.
- *
- * The old message — "this document could not be created in your account" — was true and
- * completely useless: it named the symptom, buried the reason in console.error, and gave
- * no next step. Firestore's error CODE is the whole diagnosis, so it goes in the message.
+ * A save/create failure, as the user should see it. The Firestore code (permission-denied,
+ * resource-exhausted, …) is the whole diagnosis, so the original error is logged to the
+ * console by userError(); the page shows a plain next step instead.
  */
 function describeSaveFailure(err, phase = "save") {
-  const code = String(err?.code || "").replace(/^firestore\//, "");
-  const raw = String(err?.message || err || "unknown error");
-  const what = phase === "create"
-    ? "This document could not be created in your account, so it won't appear in My Documents."
-    : "Your result could not be saved to your account.";
-  const tail = " Your scan still runs — download the result before leaving this page.";
-
-  switch (code) {
-    case "permission-denied":
-      return `${what} Firestore refused the write (permission-denied) — your session may have expired. Sign out and back in.${tail}`;
-    case "resource-exhausted":
-      return `${what} Your Firebase project has hit its write quota for today (resource-exhausted). It resets at midnight Pacific time, or raise the quota in the Firebase console.${tail}`;
-    case "unavailable":
-    case "timeout":
-      return `${what} Could not reach Firestore (${code || "network"}) — the connection dropped.${tail}`;
-    case "unauthenticated":
-      return `${what} You are signed out (unauthenticated). Sign in again.${tail}`;
-    case "invalid-argument":
-      return `${what} Firestore rejected the data (invalid-argument): ${raw}${tail}`;
-    default:
-      return `${what} Reason: ${code ? `${code} — ` : ""}${raw}${tail}`;
-  }
+  return userError(err, phase === "create" ? "create" : "save");
 }
 
 
@@ -418,7 +422,7 @@ export default function Studio() {
   const [error, setError] = useState("");
   const [prog, setProg] = useState(null);         // { done, total, etaSec }
 
-  // Which OCR engine this scan uses. Always Model 1 when the page opens.
+  // Which OCR engine this scan uses. Always FALLBACK_ENGINE when the page opens.
   const [engine, setEngine] = useState(FALLBACK_ENGINE);
   const [engineInfo, setEngineInfo] = useState(null); // { default, engines:[{id,label,configured,free}] }
   const [notesBusy, setNotesBusy] = useState(false);
@@ -432,8 +436,6 @@ export default function Studio() {
   const [accuracy, setAccuracy] = useState("fast");
   const accuracyRef = useRef("fast");
   accuracyRef.current = accuracy;
-  // Which model actually answered, so a slow scan can be diagnosed without the server log.
-  const [modelSeen, setModelSeen] = useState("");
 
   // Set when the user starts over mid-scan, so the in-flight pipeline stops cleanly
   // instead of writing its result over a document the user has already abandoned.
@@ -451,9 +453,8 @@ export default function Studio() {
     try { window.localStorage.setItem(ACCURACY_STORAGE_KEY, id); } catch {}
   };
 
-  // Every visit starts on Model 1 — a choice of Model 2 lasts for that visit only. Then
-  // ask the server which engines are actually configured, and fall back to the first
-  // one that is if Model 1 cannot run, rather than letting it fail on the first page.
+  // Every visit starts on FALLBACK_ENGINE. Then ask the server which engines are actually
+  // configured, and fall back to the first enabled one that is if it cannot run.
   useEffect(() => {
     let alive = true;
 
@@ -464,7 +465,7 @@ export default function Studio() {
         const data = await res.json();
         if (!alive || !data?.engines) return;
         setEngineInfo(data);
-        const ready = data.engines.filter((e) => e.configured).map((e) => e.id);
+        const ready = data.engines.filter((e) => e.configured && ENABLED_ENGINES.includes(e.id)).map((e) => e.id);
         if (!ready.length) return;
         setEngine(ready.includes(FALLBACK_ENGINE) ? FALLBACK_ENGINE : ready[0]);
       } catch { /* health check is advisory — the toggle still works without it */ }
@@ -619,12 +620,14 @@ export default function Studio() {
         let data = {};
         try { data = await res.json(); } catch {}
         if (res.ok && data.ok) {
-          if (data.model) setModelSeen(data.model);
+          if (data.model) console.debug("[SlideBaba] page read by", data.model);
           return { title: data.title, sections: data.sections || [] };
         }
         lastErr = new Error(data.error || data.detail || `OCR failed (HTTP ${res.status})`);
+        lastErr.kind = data.errorKind;
+        lastErr.status = res.status;
         // Config / bad-request errors won't fix themselves on retry — stop immediately so the real reason surfaces.
-        const cfg = res.status === 400 || res.status === 401 || /not configured|api key|invalid|quota|billing/i.test(data.error || data.detail || "");
+        const cfg = res.status === 400 || res.status === 401 || data.errorKind === "config" || /not configured|api key|invalid|quota|billing/i.test(data.error || data.detail || "");
         if (cfg) break;
       } catch (e) { lastErr = e; }
       // Backoff between attempts. The server already backs off internally on a busy queue,
@@ -716,7 +719,7 @@ export default function Studio() {
         destroy: () => doc.destroy(),
       };
     }
-    throw new Error("Unsupported file. Upload a PDF or an image.");
+    throw Object.assign(new Error("Unsupported file. Upload a PDF or an image."), { userMessage: "Unsupported file. Please upload a PDF or an image." });
   };
 
   /* ------------------------------------------------------------------------ */
@@ -876,7 +879,8 @@ export default function Studio() {
 
       const good = perPage.filter((x) => x.sections.length).sort((a, b) => a.i - b.i);
       if (!good.length) {
-        throw new Error(firstErr ? `Scan failed: ${firstErr.message}` : "Couldn't read any page. Please try a clearer scan.");
+        if (firstErr) throw firstErr;
+        throw Object.assign(new Error("Couldn't read any page."), { kind: "unreadable" });
       }
 
       const title = good.find((x) => x.title)?.title || name || "Document";
@@ -895,13 +899,14 @@ export default function Studio() {
       for (let s = 0; s < sections.length; s += SEC_BATCH) chunks.push(sections.slice(s, s + SEC_BATCH));
 
       let analyzeErr = null;
+      let analyzeKind;
       const chunkResults = await mapLimit(chunks, meta.analyzeConcurrency, async (chunk) => {
         try {
           const res = await fetch("/api/analyze", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title, sections: chunk, engine: eng }) });
           let data = {};
           try { data = await res.json(); } catch {}
           if (res.ok && data.ok) return data.items || [];
-          if (!analyzeErr) analyzeErr = data.error || data.detail || `HTTP ${res.status}`;
+          if (!analyzeErr) { analyzeErr = data.error || data.detail || `HTTP ${res.status}`; analyzeKind = data.errorKind; }
           return [];
         } catch (e) {
           if (!analyzeErr) analyzeErr = e.message || String(e);
@@ -911,7 +916,9 @@ export default function Studio() {
       if (!alive()) return;
 
       const its = chunkResults.flat();
-      if (!its.length) throw new Error(analyzeErr ? `Couldn't structure the content: ${analyzeErr}` : "Couldn't structure the content. Please try again.");
+      if (!its.length) {
+        throw Object.assign(new Error(`Couldn't structure the content: ${analyzeErr || "no items returned"}`), { kind: analyzeKind, context: "split" });
+      }
 
       const sl = await buildFittedSlides(its);
       if (!alive()) return;
@@ -970,7 +977,7 @@ export default function Studio() {
       else setError(pageNote);
     } catch (e) {
       if (!alive()) return;
-      setError(e?.message || "Pipeline failed.");
+      setError(userError(e, e?.context || "scan"));
       setStatus("idle");
     } finally {
       try { src?.destroy(); } catch {}
@@ -1027,7 +1034,7 @@ export default function Studio() {
       if (!made.id) setError(describeSaveFailure(made.error, "create"));
       setStatus("idle");
     } catch (e) {
-      setError(`Couldn't read that file. Make sure it's a valid PDF or image. (${e?.message || "error"})`);
+      setError(userError(e, "file"));
       setFile(null); setPages([]); setStatus("idle");
     } finally {
       if (inputRef.current) inputRef.current.value = "";
@@ -1073,7 +1080,7 @@ export default function Studio() {
       setItems(its); setSlides(sl); setStatus("preview");
       if (user && docId) updateDocument(user.uid, docId, { status: "generated", slides: sl, format: "slides" }).catch((e) => console.error("[SlideBaba] could not store generated slides:", e));
     } catch (e) {
-      setError(e.message || "Snippet extraction failed."); setStatus("idle");
+      setError(userError(e, "scan")); setStatus("idle");
     }
   };
 
@@ -1093,11 +1100,11 @@ export default function Studio() {
         savedRef.current = { docId, format: "slides" };
       }
     } catch (e) {
-      setError(`Couldn't save before opening: ${e?.message || e}`);
+      setError(userError(e, "open"));
       return;
     }
     saveHandoff({ title: t, format: "slides", slides, docId });
-    router.push("/editor");
+    router.push(docId ? `/editor?doc=${encodeURIComponent(docId)}` : "/editor");
   };
 
   // Notes used to persist NOTHING here — touchDocument wrote only `format: "notes"`, and
@@ -1115,12 +1122,12 @@ export default function Studio() {
       }
     } catch (e) {
       setNotesBusy(false);
-      setError(`Couldn't save your notes: ${e?.message || e}`);
+      setError(userError(e, "notes"));
       return;
     }
     setNotesBusy(false);
     saveHandoff({ title: t, format: "notes", items, docId });
-    router.push("/notes");
+    router.push(docId ? `/notes?doc=${encodeURIComponent(docId)}` : "/notes");
   };
 
   const onRegions = useCallback((r) => { regionsRef.current = r; }, []);
@@ -1128,12 +1135,18 @@ export default function Studio() {
   const hasDoc = Boolean(file && (pageCount > 0 || pages.length));
 
   const hasSlidePreview = Boolean(slides && slides.length);
+  // A slide's title box is its bold Sora text. A question slide has none — its number is
+  // printed in front of the question (lib/questionLabel.js) — so it previews as text only.
   const previewEntries = hasSlidePreview
-    ? slides.map((sl, idx) => {
-        const textItems = (sl.elements || []).filter((el) => el.type === "text" || !el.type).map((el) => String(el.content || "").trim());
-        return { title: textItems[0] || `Slide ${idx + 1}`, text: textItems.slice(1).join("\n\n") };
+    ? slides.map((sl) => {
+        const texts = (sl.elements || []).filter((el) => el.type === "text" || !el.type);
+        const titleEl = texts.find((el) => el.bold && el.fontFamily === "Sora");
+        return {
+          title: titleEl ? String(titleEl.content || "").trim() : "",
+          text: texts.filter((el) => el !== titleEl).map((el) => String(el.content || "").trim()).join("\n\n"),
+        };
       })
-    : items;
+    : (items || []).map(inlineQuestion);
   const previewLabel = hasSlidePreview ? "Rendered slide preview" : "OCR preview";
 
   const steps = [
@@ -1160,12 +1173,12 @@ export default function Studio() {
       {/* OCR engine picker. Both models feed the same structurer server-side, so the
           choice changes who reads the page and nothing else about the result. */}
       {status !== "preview" && (
-      <div className="mx-auto w-fit">
-        <div className="flex items-center gap-1 rounded-2xl bg-ink-800/80 p-1.5 ring-1 ring-inset ring-white/10">
+      <div className="mx-auto w-fit max-w-full">
+        <div className="flex flex-wrap items-center justify-center gap-1 rounded-2xl bg-ink-800/80 p-1.5 ring-1 ring-inset ring-white/10">
           {ENGINE_ORDER.map((id) => {
             const m = engineMeta(id);
             const active = engine === id;
-            const ready = engineReady(id);
+            const ready = ENABLED_ENGINES.includes(id) && engineReady(id);
             return (
               <button
                 key={id}
@@ -1173,7 +1186,7 @@ export default function Studio() {
                 onClick={() => ready && !busy && pickEngine(id)}
                 disabled={busy || !ready}
                 aria-pressed={active}
-                title={ready ? m.sub : `${m.sub} is not set up on the server yet`}
+                title={ready ? m.label : `${m.label} is not available`}
                 className={`flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-bold transition disabled:cursor-not-allowed ${
                   active
                     ? "bg-gradient-to-r from-emerald-500 to-cyan-500 text-white shadow-soft"
@@ -1245,7 +1258,7 @@ export default function Studio() {
           <div className="mx-auto max-w-3xl rounded-2xl bg-white p-8 text-ink-900 shadow-card ring-1 ring-black/10 sm:p-12">
             {previewEntries.map((it, i) => (
               <div key={i} className={i ? "mt-7 border-t border-slate-200 pt-7" : ""}>
-                <p className="mb-1.5 text-sm font-extrabold text-brand-700">{it.title || `Item ${i + 1}`}</p>
+                {it.title && <p className="mb-1.5 text-sm font-extrabold text-brand-700">{it.title}</p>}
                 <div className="kx whitespace-pre-wrap text-[15px] leading-relaxed text-slate-800" dangerouslySetInnerHTML={{ __html: renderMixed(it.text || "") }} />
               </div>
             ))}
@@ -1300,11 +1313,11 @@ export default function Studio() {
                       <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-ink-950">
                         <div className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-cyan-400 transition-all" style={{ width: `${Math.round((prog.done / prog.total) * 100)}%` }} />
                       </div>
-                      {/* The measured rate and the model that actually answered. If a scan is
-                          slow, these two numbers say why without opening the server log. */}
+                      {/* The measured rate. The model that answered is deliberately not shown —
+                          customers never see provider or model names. */}
                       {prog.secPerPage > 0 && (
                         <p className="mt-2 truncate text-[10.5px] text-slate-600">
-                          {prog.secPerPage}s per page{modelSeen ? ` · ${modelSeen}` : ""}{accuracy === "max" ? " · max accuracy" : ""}
+                          {prog.secPerPage}s per page{accuracy === "max" ? " · max accuracy" : ""}
                         </p>
                       )}
                     </div>
