@@ -8,6 +8,8 @@ import {
   Laptop, Bot, AlertTriangle, Target, Zap, Sparkles,
 } from "lucide-react";
 import { renderMixed } from "@/components/Katex";
+import { splitTextAndTables } from "@/lib/tableText";
+import { tableRows } from "@/lib/slideRender";
 import RegionSelector from "@/components/studio/RegionSelector";
 import { useAuth } from "@/context/AuthContext";
 import { saveHandoff } from "@/lib/slideStore";
@@ -17,6 +19,7 @@ import { checkDocumentLimits, consume, remaining, maxPagesFor, maxSlidesFor, PLA
 import PlanModal from "@/components/subscription/PlanModal";
 import { userError } from "@/lib/userError";
 import { inlineQuestion } from "@/lib/questionLabel";
+import { figureMarkRe, figureRefRe, stripFigureMarks, splitTextAndImages, hasFigures } from "@/lib/figures";
 import {
   openPdf, pdfToPageImages, fileToDataUrl, imageSize, cropImage, downscaleDataUrl,
   tilePageImage, sliceForAccuracy, analyzePageLayout, makeThumb,
@@ -384,6 +387,29 @@ async function mapLimit(arr, limit, fn) {
 
 const range = (from, to) => Array.from({ length: Math.max(0, to - from) }, (_, k) => from + k);
 
+/** Preview HTML for one table (rows of cell strings); first row bold when it is a header. */
+function previewTableHtml(rows, header) {
+  const cell = "border:1px solid #cbd5e1;padding:4px 8px;vertical-align:top;text-align:left;white-space:normal;";
+  const body = (rows || []).map((row, r) => {
+    const tag = header && r === 0 ? "th" : "td";
+    const style = tag === "th" ? `${cell}background:#f1f5f9;font-weight:700;` : cell;
+    return `<tr>${row.map((c) => `<${tag} style="${style}">${renderMixed(String(c ?? ""))}</${tag}>`).join("")}</tr>`;
+  }).join("");
+  return `<table style="border-collapse:collapse;width:100%;margin:6px 0;">${body}</table>`;
+}
+
+/** A section with its raw figure markers removed (slices/tiles: their boxes are not page boxes). */
+const stripSecMarks = (s) => ({ ...s, heading: stripFigureMarks(s?.heading), body: stripFigureMarks(s?.body) });
+
+const previewImgHtml = (src) => `<img src="${src}" alt="figure" style="display:block;max-width:60%;max-height:260px;margin:8px 0;border-radius:6px;" />`;
+
+/** Preview HTML for question text that may contain OCR'd <table> markup. */
+function previewTextHtml(text) {
+  return splitTextAndImages(text).map((part) => (part.kind === "image"
+    ? previewImgHtml(part.src)
+    : splitTextAndTables(part.text).map((p) => (p.kind === "table" ? previewTableHtml(p.rows, p.header) : renderMixed(p.text))).join(""))).join("");
+}
+
 /** "3:07" */
 const fmtClock = (sec) => `${Math.floor(sec / 60)}:${String(Math.max(0, Math.round(sec % 60))).padStart(2, "0")}`;
 
@@ -440,6 +466,63 @@ export default function Studio() {
   // Set when the user starts over mid-scan, so the in-flight pipeline stops cleanly
   // instead of writing its result over a document the user has already abandoned.
   const runRef = useRef(0);
+
+  // Figures cropped during the current scan: id -> JPEG data URL (see lib/figures.js).
+  const figsRef = useRef(new Map());
+  const figSeqRef = useRef(0);
+
+  /**
+   * Crop every [[FIGURE ymin,xmin,ymax,xmax]] box the model marked out of `img` (the image
+   * that was read), keep it, and leave a short [[FIG:id]] in the text so the splitting
+   * request stays small. A box that is too small, or so big it is the whole page, is dropped.
+   */
+  const cropFigures = async (sections, img) => {
+    const list = sections || [];
+    if (!list.some((s) => hasFigures(`${s.heading || ""}\n${s.body || ""}`))) return list;
+    let size = null;
+    try { size = await imageSize(img); } catch { /* fall through: markers are removed below */ }
+    const swap = async (text) => {
+      const src = String(text || "");
+      const marks = [...src.matchAll(figureMarkRe())];
+      if (!marks.length) return src;
+      let out = src;
+      for (const m of marks) {
+        let ref = "";
+        try {
+          let [ymin, xmin, ymax, xmax] = m.slice(1, 5).map(Number);
+          if (ymin > ymax) [ymin, ymax] = [ymax, ymin];
+          if (xmin > xmax) [xmin, xmax] = [xmax, xmin];
+          const bw = xmax - xmin;
+          const bh = ymax - ymin;
+          if (size && bw >= 25 && bh >= 25 && bw * bh <= 900 * 900) {
+            // 1.5% of the page on every side, so vertex labels at the edge are not cut off.
+            const pad = 15;
+            const x0 = (Math.max(0, xmin - pad) / 1000) * size.width;
+            const y0 = (Math.max(0, ymin - pad) / 1000) * size.height;
+            const x1 = (Math.min(1000, xmax + pad) / 1000) * size.width;
+            const y1 = (Math.min(1000, ymax + pad) / 1000) * size.height;
+            const crop = await cropImage(img, { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }, 0.92);
+            const small = await downscaleDataUrl(crop, 900, 0.82);
+            const id = `f${++figSeqRef.current}`;
+            figsRef.current.set(id, small);
+            ref = `[[FIG:${id}]]`;
+          }
+        } catch { /* a failed crop just leaves the figure out */ }
+        out = out.replace(m[0], ref);
+      }
+      return out;
+    };
+    return Promise.all(list.map(async (sec) => ({ ...sec, heading: await swap(sec.heading), body: await swap(sec.body) })));
+  };
+
+  /** After splitting: swap each [[FIG:id]] for the image itself, and keep figures out of titles. */
+  const resolveFigures = (items) => (items || []).map((it) => ({
+    ...it,
+    title: String(it.title || "").replace(figureRefRe(), "").trim(),
+    text: String(it.text || "")
+      .replace(figureRefRe(), (_, id) => { const src = figsRef.current.get(id); return src ? `\n[[IMG:${src}]]\n` : ""; })
+      .replace(/\n{3,}/g, "\n\n").trim(),
+  }));
 
   useEffect(() => {
     try {
@@ -663,7 +746,7 @@ export default function Studio() {
         const slices = await sliceForAccuracy(img, { layout, maxSlices: meta.maxSlices, quality: PAGE_QUALITY });
         if (slices.length) {
           const sliceSecs = await mapLimit(slices, meta.sliceConcurrency, async (s) => {
-            try { const r = await ocrImage(s.image, 1, engineId, s.part); return r.sections || []; }
+            try { const r = await ocrImage(s.image, 1, engineId, s.part); return (r.sections || []).map(stripSecMarks); }
             catch { return []; }
           });
           const enriched = dedupeSections(sliceSecs.flat());
@@ -681,7 +764,7 @@ export default function Studio() {
       try {
         const tiles = await tilePageImage(img, 2, 0.08);
         const tileResults = await mapLimit(tiles, meta.sliceConcurrency, async (t) => {
-          try { const r = await ocrImage(t, 1, engineId); return r.sections || []; } catch { return []; }
+          try { const r = await ocrImage(t, 1, engineId); return (r.sections || []).map(stripSecMarks); } catch { return []; }
         });
         const merged = dedupeSections(tileResults.flat());
         // prefer tiles only if they genuinely recovered more complete questions
@@ -742,6 +825,7 @@ export default function Studio() {
     const name = f.name || "Document";
 
     setError(""); setItems(null); setSlides(null); setStatus("loading"); setProg(null);
+    figsRef.current = new Map();
 
     let src = null;
     let id = existingDocId;
@@ -806,7 +890,8 @@ export default function Studio() {
         try {
           const r = await ocrPage(img, eng);
           if (!r.sections.length) failed.push(i + 1);
-          return { i, title: r.title, sections: r.sections };
+          const sections = await cropFigures(r.sections, img);
+          return { i, title: r.title, sections };
         } catch (e) {
           if (!firstErr) firstErr = e;
           failed.push(i + 1);
@@ -915,7 +1000,7 @@ export default function Studio() {
       });
       if (!alive()) return;
 
-      const its = chunkResults.flat();
+      const its = resolveFigures(chunkResults.flat());
       if (!its.length) {
         throw Object.assign(new Error(`Couldn't structure the content: ${analyzeErr || "no items returned"}`), { kind: analyzeKind, context: "split" });
       }
@@ -1052,15 +1137,17 @@ export default function Studio() {
     const regions = regionsRef.current;
     if (!regions.length) { setError("Draw at least one box around a question first."); return; }
     setError(""); setStatus("scanning");
+    figsRef.current = new Map();
     try {
       const its = await mapLimit(regions, scanMeta(engineRef.current, accuracyRef.current).concurrency, async (r, i) => {
         const src = pages[r.page];
         const { width, height } = await imageSize(src);
         const cropped = await cropImage(src, { x: r.fx * width, y: r.fy * height, w: r.fw * width, h: r.fh * height });
         const ocr = await ocrImage(cropped, null, engineRef.current);
-        const text = ocr.sections.map((s) => `${s.heading ? s.heading + " " : ""}${s.body}`).join("\n").trim();
+        const secs = await cropFigures(ocr.sections, cropped);
+        const text = secs.map((s) => `${s.heading ? s.heading + " " : ""}${s.body}`).join("\n").trim();
         return { title: `Snippet ${i + 1}`, text: text || ocr.title || "" };
-      });
+      }).then(resolveFigures);
 
       const sl = await buildFittedSlides(its);
       const slideGate = checkDocumentLimits(profile, { slides: sl.length });
@@ -1137,16 +1224,22 @@ export default function Studio() {
   const hasSlidePreview = Boolean(slides && slides.length);
   // A slide's title box is its bold Sora text. A question slide has none — its number is
   // printed in front of the question (lib/questionLabel.js) — so it previews as text only.
+  // Each entry carries ready HTML: prose through KaTeX, tables as real tables. A slide's table
+  // box used to be skipped here, and an item's table printed as <table><tr>… markup.
   const previewEntries = hasSlidePreview
     ? slides.map((sl) => {
-        const texts = (sl.elements || []).filter((el) => el.type === "text" || !el.type);
-        const titleEl = texts.find((el) => el.bold && el.fontFamily === "Sora");
+        const body = (sl.elements || []).filter((el) => el.type === "text" || !el.type || el.type === "table" || (el.type === "image" && !el.brand));
+        const titleEl = body.find((el) => (el.type === "text" || !el.type) && el.bold && el.fontFamily === "Sora");
         return {
           title: titleEl ? String(titleEl.content || "").trim() : "",
-          text: texts.filter((el) => el !== titleEl).map((el) => String(el.content || "").trim()).join("\n\n"),
+          html: body.filter((el) => el !== titleEl).map((el) =>
+            el.type === "table" ? previewTableHtml(tableRows(el), el.header !== false)
+              : el.type === "image" ? previewImgHtml(el.src)
+                : previewTextHtml(String(el.content || "").trim()),
+          ).join("<br/>"),
         };
       })
-    : (items || []).map(inlineQuestion);
+    : (items || []).map(inlineQuestion).map((it) => ({ title: it.title, html: previewTextHtml(it.text) }));
   const previewLabel = hasSlidePreview ? "Rendered slide preview" : "OCR preview";
 
   const steps = [
@@ -1259,7 +1352,7 @@ export default function Studio() {
             {previewEntries.map((it, i) => (
               <div key={i} className={i ? "mt-7 border-t border-slate-200 pt-7" : ""}>
                 {it.title && <p className="mb-1.5 text-sm font-extrabold text-brand-700">{it.title}</p>}
-                <div className="kx whitespace-pre-wrap text-[15px] leading-relaxed text-slate-800" dangerouslySetInnerHTML={{ __html: renderMixed(it.text || "") }} />
+                <div className="kx whitespace-pre-wrap text-[15px] leading-relaxed text-slate-800" dangerouslySetInnerHTML={{ __html: it.html || "" }} />
               </div>
             ))}
           </div>

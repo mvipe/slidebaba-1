@@ -288,6 +288,19 @@ function withBareLatex(tokens) {
   return out;
 }
 
+/**
+ * KaTeX options for one formula. In a line of text KaTeX draws \frac at "inline" size,
+ * so an option like "A) 3/4" came out much smaller than the words around it. Inline
+ * fractions are drawn full size instead (\frac -> \dfrac); the extra height is given
+ * room by the tall-maths spacing rule in app/globals.css. A fresh macros object each time:
+ * KaTeX may write into it.
+ */
+function katexOptions(display) {
+  return display
+    ? { throwOnError: false, displayMode: true }
+    : { throwOnError: false, displayMode: false, macros: { "\\frac": "\\dfrac" } };
+}
+
 export function renderMixed(text) {
   if (!text) return "";
   return withBareLatex(tokenize(String(text)))
@@ -295,7 +308,7 @@ export function renderMixed(text) {
       if (tok.type === "text") return decorateText(tok.value);
       const expr = tok.raw ? tok.value : tok.value.trim();
       try {
-        return katex.renderToString(expr, { throwOnError: false, displayMode: !!tok.display });
+        return katex.renderToString(expr, katexOptions(tok.display));
       } catch {
         return decorateText(tok.raw ? tok.value : tok.display ? `$$${tok.value}$$` : `$${tok.value}$`);
       }
@@ -317,7 +330,7 @@ export function renderMixedAnnotated(text) {
       if (tok.type === "text") return decorateText(tok.value);
       const expr = tok.raw ? tok.value : tok.value.trim();
       let html;
-      try { html = katex.renderToString(expr, { throwOnError: false, displayMode: !!tok.display }); }
+      try { html = katex.renderToString(expr, katexOptions(tok.display)); }
       catch { html = decorateText(tok.raw ? tok.value : tok.display ? `$$${tok.value}$$` : `$${tok.value}$`); }
       return `<span class="mathpill" data-latex="${attr(expr)}">${html}</span>`;
     })

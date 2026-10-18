@@ -153,3 +153,9 @@ html:not(.dark) .app-shell [class*="bg-gradient-to"].text-white { color: #fff !i
 .kx .katex { font-size: 1.04em; }
 .kx .katex-display { margin: 0.4em 0; overflow-x: auto; overflow-y: hidden; }
 .katex-display { max-width: 100%; }
+/* Tall inline maths — matrices, big brackets, fractions — gets room above and below, so
+   stacked lines such as matrix options "(i) [..] + [..]" / "(ii) [..]" never touch.
+   lib/slideLayout.js measures text with this same CSS, so slides still fit exactly. */
+.katex:has(.mtable),
+.katex:has(.delimsizing),
+.katex:has(.mfrac) { display: inline-block; margin: 0.35em 0; }

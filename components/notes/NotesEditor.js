@@ -25,6 +25,8 @@ import { useAutoSave } from "@/lib/useAutoSave";
 import { readLocalDraft, clearLocalDraft, localKey } from "@/lib/docStore";
 import { userError } from "@/lib/userError";
 import { questionParts } from "@/lib/questionLabel";
+import { splitTextAndTables } from "@/lib/tableText";
+import { splitTextAndImages } from "@/lib/figures";
 import { loadDocument } from "@/lib/docs";
 import DocLoadOverlay from "@/components/DocLoadOverlay";
 import ThemeToggleButton from "@/components/ThemeToggleButton";
@@ -38,6 +40,30 @@ function renderLatex(latex, display) {
   catch { return String(latex || "").replace(/</g, "&lt;"); }
 }
 function escapeHtml(s) { return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+/**
+ * A question's text as notes HTML. Tables arrive from OCR as HTML markup
+ * (<table><tr><td>…); rendering the whole text as prose printed that markup as code, so
+ * tables are split out and drawn as real tables — the same parser the slides use.
+ * No newlines between tags: the body is white-space:pre-wrap and would show them.
+ */
+function notesTextHtml(text) {
+  // Diagrams first ([[IMG:…]] from the scan), in their printed place; then tables and prose.
+  return splitTextAndImages(text).map((part) => (part.kind === "image"
+    ? `<img class="q-fig" src="${part.src}" alt="figure" />`
+    : notesProseHtml(part.text))).join("");
+}
+
+function notesProseHtml(text) {
+  return splitTextAndTables(text).map((p) => {
+    if (p.kind === "text") return renderMixedAnnotated(p.text);
+    const rows = (p.rows || []).map((row, r) => {
+      const tag = p.header && r === 0 ? "th" : "td";
+      return `<tr>${row.map((c) => `<${tag}>${renderMixedAnnotated(String(c ?? ""))}</${tag}>`).join("")}</tr>`;
+    }).join("");
+    return `<table class="notes-table"><tbody>${rows}</tbody></table>`;
+  }).join("");
+}
+
 function buildBodyHtml(items) {
   if (!items?.length) return "<p>Start typing your notes…</p>";
   return items.map((it, i) => {
@@ -46,7 +72,7 @@ function buildBodyHtml(items) {
     const { label, title, text } = questionParts(it);
     const num = label ? `<strong class="q-num">${escapeHtml(label)}</strong> ` : "";
     const head = title ? `<p class="q-head"><strong>${escapeHtml(title || `Question ${i + 1}`)}</strong></p>` : "";
-    return `<section class="q-block">${head}<div class="q-body">${num}${renderMixedAnnotated(text)}</div></section>`;
+    return `<section class="q-block">${head}<div class="q-body">${num}${notesTextHtml(text)}</div></section>`;
   }).join("");
 }
 function blockToText(bodyEl) {
@@ -392,7 +418,9 @@ export default function NotesEditor() {
         .notes-body .mathpill .katex{ background:transparent; border:0; padding:0; }
         .notes-body p{ margin:0 0 8px; } .notes-body ul,.notes-body ol{ margin:0 0 8px 22px; }
         .notes-table{ border-collapse:collapse; width:100%; margin:6px 0 12px; }
-        .notes-table td{ border:1px solid #cbd5e1; padding:6px 8px; min-width:40px; }
+        .notes-table td, .notes-table th{ border:1px solid #cbd5e1; padding:6px 8px; min-width:40px; white-space:normal; vertical-align:top; text-align:left; }
+        .notes-table th{ background:#f1f5f9; font-weight:700; }
+        .notes-body .q-fig{ display:block; max-width:min(100%, 360px); max-height:280px; width:auto; height:auto; margin:8px 0; border-radius:4px; }
         @media (max-width:860px){ .notes-page{ width:100%; } }
         @media print {
           body * { visibility:hidden !important; }
