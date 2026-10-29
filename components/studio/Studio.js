@@ -77,6 +77,38 @@ const ACCURACY_STORAGE_KEY = "slidebaba.accuracy.v1";
 const SNIPPET_MAX_DIM = 1700;
 const SNIPPET_MAX_PAGES = 40;
 
+/** Images that can be picked together and scanned as one document (one image = one page). */
+const MAX_IMAGES = 10;
+
+const isImageFile = (f) => String(f?.type || "").startsWith("image/");
+const isPdfFile = (f) => f?.type === "application/pdf" || /\.pdf$/i.test(f?.name || "");
+
+/**
+ * Turn what the file picker returned into ONE upload, or explain why not.
+ * Several images become a single document whose pages are the images in file-name order
+ * ("2.jpg" before "10.jpg"); the picker hands them over in no reliable order.
+ * A PDF is always one at a time.
+ *   -> { upload } | { error }
+ */
+function toUpload(fileList) {
+  const files = Array.from(fileList || []);
+  if (!files.length) return {};
+  if (files.length === 1) return { upload: files[0] };
+  if (files.some(isPdfFile)) {
+    return { error: files.every(isPdfFile) ? "Select one PDF at a time." : "Select either one PDF or up to 10 images — not both together." };
+  }
+  if (!files.every(isImageFile)) return { error: "Unsupported file. Please upload a PDF or images (JPG, PNG)." };
+  if (files.length > MAX_IMAGES) return { error: `You can select up to ${MAX_IMAGES} images at a time. You selected ${files.length}.` };
+  const sorted = [...files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+  return {
+    upload: {
+      name: `${sorted[0].name} (+${sorted.length - 1} more)`,
+      type: "image/multiple",
+      files: sorted,
+    },
+  };
+}
+
 /* -------------------------------------------------------------------------- */
 /* section helpers                                                             */
 /* -------------------------------------------------------------------------- */
@@ -788,6 +820,15 @@ export default function Studio() {
    * from filling the tab's memory and failing with "Try again".
    */
   const makePageSource = async (f) => {
+    if (Array.isArray(f.files)) {
+      // Several images picked together: one page each, decoded only when that page is
+      // scanned and dropped afterwards — the same memory behaviour as PDF pages.
+      return {
+        total: f.files.length,
+        get: async (i) => downscaleDataUrl(await fileToDataUrl(f.files[i]), PAGE_MAX_DIM, PAGE_QUALITY),
+        destroy: () => {},
+      };
+    }
     if (f.type.startsWith("image/")) {
       const url = await fileToDataUrl(f);
       const sized = await downscaleDataUrl(url, PAGE_MAX_DIM, PAGE_QUALITY);
@@ -1074,7 +1115,9 @@ export default function Studio() {
   /* file picking                                                              */
   /* ------------------------------------------------------------------------ */
 
-  const onPick = async (f) => {
+  const onPick = async (fileList) => {
+    const { upload: f, error: pickError } = toUpload(fileList);
+    if (pickError) { setError(pickError); if (inputRef.current) inputRef.current.value = ""; return; }
     if (!f) return;
     if (!user) { router.push("/register"); return; }
     // Don't let an upload start while the profile is still loading — otherwise the
@@ -1097,7 +1140,11 @@ export default function Studio() {
     setStatus("loading");
     try {
       let imgs = [];
-      if (f.type.startsWith("image/")) {
+      if (Array.isArray(f.files)) {
+        const gate = checkDocumentLimits(profile, { pages: f.files.length });
+        if (!gate.ok) { setLimitBlock(gate); setFile(null); setStatus("idle"); return; }
+        for (const one of f.files) imgs.push(await downscaleDataUrl(await fileToDataUrl(one), SNIPPET_MAX_DIM, 0.92));
+      } else if (f.type.startsWith("image/")) {
         imgs = [await downscaleDataUrl(await fileToDataUrl(f), SNIPPET_MAX_DIM, 0.92)];
       } else {
         const count = await (async () => { const d = await openPdf(f); const n = d.numPages; d.destroy(); return n; })();
@@ -1333,7 +1380,7 @@ export default function Studio() {
       </div>
       )}
 
-      <input ref={inputRef} type="file" accept="image/*,.pdf" className="hidden" onChange={(e) => onPick(e.target.files?.[0])} />
+      <input ref={inputRef} type="file" accept="image/*,.pdf" multiple className="hidden" onChange={(e) => onPick(e.target.files)} />
       {error && <div className="rounded-xl bg-accent-600/15 px-4 py-3 text-sm text-accent-300 ring-1 ring-inset ring-accent-500/30">{error}</div>}
 
       {status === "preview" && previewEntries ? (
@@ -1375,7 +1422,7 @@ export default function Studio() {
                 <>
                   <span className="grid h-16 w-16 place-items-center rounded-2xl bg-sky-500/15 text-sky-300 shadow-soft"><FileUp className="h-8 w-8" /></span>
                   <p className="mt-4 font-display text-2xl font-extrabold text-white">Upload Document</p>
-                  <p className="mt-1 text-sm text-slate-500">PDF, JPG, PNG — up to {planPages} pages on your plan</p>
+                  <p className="mt-1 text-sm text-slate-500">One PDF, or up to {MAX_IMAGES} images (JPG, PNG) — up to {planPages} pages on your plan</p>
                 </>
               )}
             </button>
@@ -1485,7 +1532,7 @@ export default function Studio() {
             <button onClick={() => inputRef.current?.click()} className="grid min-h-[380px] w-full place-items-center rounded-2xl border-2 border-dashed border-white/15 bg-ink-850/40 text-center transition hover:border-brand-500/50">
               <span className="grid h-16 w-16 place-items-center rounded-2xl bg-sky-500/10 text-sky-300"><FileUp className="h-8 w-8" /></span>
               <p className="mt-4 font-display text-xl font-bold text-white">No Document Loaded</p>
-              <p className="mt-1 text-sm text-slate-500">Upload a PDF or Image to get started (max {Math.min(planPages, SNIPPET_MAX_PAGES)} pages in this mode).</p>
+              <p className="mt-1 text-sm text-slate-500">Upload one PDF or up to {MAX_IMAGES} images to get started (max {Math.min(planPages, SNIPPET_MAX_PAGES)} pages in this mode).</p>
             </button>
           ) : (
             <div className="relative">
