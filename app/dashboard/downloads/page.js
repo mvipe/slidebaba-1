@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Download, FileDown, Trash2, Presentation } from "lucide-react";
+import { Download, FileDown, Trash2, Presentation, Clock } from "lucide-react";
 import Topbar from "@/components/dashboard/Topbar";
 import { useAuth } from "@/context/AuthContext";
-import { listDownloads, removeDownload } from "@/lib/docs";
+import { listDownloads, removeDownload, isRecent, KEEP_DAYS } from "@/lib/docs";
 import { fmtDate } from "@/lib/usage";
 
 export default function DownloadsPage() {
@@ -13,7 +13,7 @@ export default function DownloadsPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (user) listDownloads(user.uid).then((d) => { setItems(d); setLoading(false); });
+    if (user) listDownloads(user.uid).then((d) => { setItems(d.filter(isRecent)); setLoading(false); });
   }, [user]);
 
   const del = async (id) => {
@@ -25,6 +25,11 @@ export default function DownloadsPage() {
     <>
       <Topbar title="My Downloads" />
       <div className="flex-1 overflow-y-auto bg-dots p-6">
+        <p className="mb-4 flex items-center gap-2 rounded-xl bg-ink-850 px-4 py-3 text-sm text-slate-400 ring-1 ring-inset ring-white/10">
+          <Clock className="h-4 w-4 shrink-0 text-brand-300" />
+          Downloads are kept here for {KEEP_DAYS} days. After that they&apos;re removed from this list.
+        </p>
+
         {loading ? (
           <p className="py-16 text-center text-sm text-slate-500">Loading…</p>
         ) : items.length === 0 ? (

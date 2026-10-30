@@ -3,10 +3,10 @@
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Search, FileText, Presentation, FileType2, Trash2, Plus } from "lucide-react";
+import { Search, FileText, Presentation, FileType2, Trash2, Plus, Clock } from "lucide-react";
 import Topbar from "@/components/dashboard/Topbar";
 import { useAuth } from "@/context/AuthContext";
-import { listDocuments, removeDocument, loadDocument, storedFormats } from "@/lib/docs";
+import { listDocuments, removeDocument, loadDocument, storedFormats, isRecent, KEEP_DAYS } from "@/lib/docs";
 import { saveHandoff } from "@/lib/slideStore";
 import { fmtDate } from "@/lib/usage";
 
@@ -81,6 +81,7 @@ export default function DocumentsPage() {
   };
 
   const filtered = docs.filter((d) => {
+    if (!isRecent(d)) return false;
     const okTab = tab === "All" || (d.status || "generated").toLowerCase() === tab.toLowerCase();
     const okQ = !q || d.name.toLowerCase().includes(q.toLowerCase());
     return okTab && okQ;
@@ -112,6 +113,11 @@ export default function DocumentsPage() {
             ))}
           </div>
         </div>
+
+        <p className="mb-4 flex items-center gap-2 rounded-xl bg-ink-850 px-4 py-3 text-sm text-slate-400 ring-1 ring-inset ring-white/10">
+          <Clock className="h-4 w-4 shrink-0 text-brand-300" />
+          Documents are kept here for {KEEP_DAYS} days from the day they&apos;re created. After that they&apos;re removed from this list.
+        </p>
 
         {loadError && (
           <div className="mb-4 rounded-xl bg-accent-500/10 px-4 py-3 text-sm text-accent-200 ring-1 ring-inset ring-accent-500/30">{loadError}</div>

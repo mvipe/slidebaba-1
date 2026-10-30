@@ -12,7 +12,7 @@ import PlanBadges from "@/components/dashboard/PlanBadges";
 import { TutorialCard } from "@/components/WatchTutorial";
 import { useSidebar } from "@/components/dashboard/sidebarStore";
 import { useAuth } from "@/context/AuthContext";
-import { listDocuments, loadDocument } from "@/lib/docs";
+import { listDocuments, loadDocument, isRecent } from "@/lib/docs";
 import { saveHandoff } from "@/lib/slideStore";
 import { fmtDate } from "@/lib/usage";
 
@@ -31,6 +31,9 @@ export default function OverviewPage() {
       setDocs([]);
     });
   }, [user]);
+
+  // Same 7-day window as My Documents.
+  const recentDocs = docs.filter(isRecent);
 
   const thisMonth = docs.filter((d) => {
     const dt = d.createdAt?.toDate ? d.createdAt.toDate() : null;
@@ -138,14 +141,14 @@ export default function OverviewPage() {
             <div className="grid grid-cols-[1fr_auto_auto_auto] gap-4 border-b border-white/10 px-5 py-3 text-xs font-bold uppercase tracking-wider text-slate-500">
               <span>Document name</span><span className="hidden sm:block">Date</span><span>Status</span><span>Open</span>
             </div>
-            {docs.length === 0 ? (
+            {recentDocs.length === 0 ? (
               <div className="grid place-items-center px-5 py-12 text-center">
                 <FileText className="h-8 w-8 text-slate-600" />
                 <p className="mt-3 text-sm text-slate-400">No documents yet. Generate your first from AI Studio.</p>
                 <Link href="/dashboard/studio" className="btn-ghost mt-4">Open AI Studio</Link>
               </div>
             ) : (
-              docs.slice(0, 5).map((d) => (
+              recentDocs.slice(0, 5).map((d) => (
                 <button
                   key={d.id}
                   onClick={() => openDoc(d)}
